@@ -182,62 +182,81 @@ def build(df: pd.DataFrame, title: str = "", patterns=None,
                     row=1, col=1,
                 )
 
-    # --- K 線型態標記（icon only，hover 解說）---
+    # --- K 線型態標記 ---
+    # 分兩層：最近 6 個帶文字標籤、其餘只有 icon（避免擁擠但保留資訊）
     if candle_history:
         seen_name = set()
-        bull_x, bull_y, bull_hover = [], [], []
-        bear_x, bear_y, bear_hover = [], [], []
-        neutral_x, neutral_y, neutral_hover = [], [], []
-        for (cand_idx, candles) in candle_history[-12:]:
+        # 分別收集：帶字 / 不帶字 兩組
+        def _empty():
+            return {"x": [], "y": [], "txt": [], "hv": []}
+        labeled = {"bull": _empty(), "bear": _empty(), "neutral": _empty()}
+        icon_only = {"bull": _empty(), "bear": _empty(), "neutral": _empty()}
+
+        # 取全部，最近 6 個帶字、前面只圖示
+        all_events = []
+        for (cand_idx, candles) in candle_history[-14:]:
             if cand_idx >= len(df):
                 continue
-            date = df.index[cand_idx]
             for c in candles:
                 key = (cand_idx, c.name)
                 if key in seen_name:
                     continue
                 seen_name.add(key)
-                is_bull = c.signal == "bull"
-                is_bear = c.signal == "bear"
-                tmpl = (f"<b>{c.name}</b><br>"
-                        f"日期：{date.date()}<br>"
-                        f"含意：{c.note}<br>訊號：")
-                if is_bull:
-                    y = df["low"].iloc[cand_idx] * 0.985
-                    bull_x.append(date); bull_y.append(y)
-                    bull_hover.append(tmpl + "🔴 偏多")
-                elif is_bear:
-                    y = df["high"].iloc[cand_idx] * 1.015
-                    bear_x.append(date); bear_y.append(y)
-                    bear_hover.append(tmpl + "🟢 偏空")
-                else:
-                    y = df["high"].iloc[cand_idx] * 1.015
-                    neutral_x.append(date); neutral_y.append(y)
-                    neutral_hover.append(tmpl + "⚪ 中性")
+                all_events.append((cand_idx, c))
+        # 按日期排序
+        all_events.sort(key=lambda x: x[0])
+        n_lbl = 6
+        for i, (cand_idx, c) in enumerate(all_events):
+            date = df.index[cand_idx]
+            is_bull = c.signal == "bull"
+            is_bear = c.signal == "bear"
+            kind = "bull" if is_bull else "bear" if is_bear else "neutral"
+            y = (df["low"].iloc[cand_idx] * 0.98 if is_bull
+                 else df["high"].iloc[cand_idx] * 1.02)
+            hover = (f"<b>{c.name}</b><br>"
+                     f"日期：{date.date()}<br>"
+                     f"含意：{c.note}<br>訊號：" +
+                     ("🔴 偏多" if is_bull else
+                      "🟢 偏空" if is_bear else "⚪ 中性"))
+            # 最近 n_lbl 個帶字、其餘只圖示
+            target = (labeled[kind] if i >= len(all_events) - n_lbl
+                      else icon_only[kind])
+            target["x"].append(date)
+            target["y"].append(y)
+            target["txt"].append(c.name)
+            target["hv"].append(hover)
 
-        if bull_x:
+        symbols = {"bull": "triangle-up", "bear": "triangle-down",
+                   "neutral": "diamond"}
+        colors = {"bull": "#d62728", "bear": "#2ca02c", "neutral": "#aaa"}
+        positions = {"bull": "bottom center", "bear": "top center",
+                     "neutral": "top center"}
+        names = {"bull": "多頭型態", "bear": "空頭型態", "neutral": "中性型態"}
+
+        # 帶文字層（最近 6 個）
+        for kind, data in labeled.items():
+            if not data["x"]:
+                continue
             fig.add_trace(go.Scatter(
-                x=bull_x, y=bull_y, mode="markers",
-                marker=dict(symbol="triangle-up", size=10, color="#d62728",
+                x=data["x"], y=data["y"], mode="markers+text",
+                marker=dict(symbol=symbols[kind], size=12, color=colors[kind],
                             line=dict(color="white", width=0.8)),
-                hovertext=bull_hover, hoverinfo="text",
-                name="多頭型態", showlegend=True,
+                text=data["txt"], textposition=positions[kind],
+                textfont=dict(size=10, color=colors[kind]),
+                hovertext=data["hv"], hoverinfo="text",
+                name=names[kind], showlegend=True,
             ), row=1, col=1)
-        if bear_x:
+        # 只圖示層（較舊）
+        for kind, data in icon_only.items():
+            if not data["x"]:
+                continue
             fig.add_trace(go.Scatter(
-                x=bear_x, y=bear_y, mode="markers",
-                marker=dict(symbol="triangle-down", size=10, color="#2ca02c",
-                            line=dict(color="white", width=0.8)),
-                hovertext=bear_hover, hoverinfo="text",
-                name="空頭型態", showlegend=True,
-            ), row=1, col=1)
-        if neutral_x:
-            fig.add_trace(go.Scatter(
-                x=neutral_x, y=neutral_y, mode="markers",
-                marker=dict(symbol="diamond", size=8, color="#aaa",
-                            line=dict(color="white", width=0.8)),
-                hovertext=neutral_hover, hoverinfo="text",
-                name="中性型態", showlegend=True,
+                x=data["x"], y=data["y"], mode="markers",
+                marker=dict(symbol=symbols[kind], size=8,
+                            color=colors[kind], opacity=0.65,
+                            line=dict(color="white", width=0.5)),
+                hovertext=data["hv"], hoverinfo="text",
+                name=f"{names[kind]} (較舊)", showlegend=False,
             ), row=1, col=1)
 
     # --- 進場區 / 目標 / 停損 水平線（交易計畫）---
