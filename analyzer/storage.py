@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import base64
 import logging
+import os
 from pathlib import Path
 
 import requests
@@ -21,6 +22,24 @@ import requests
 logger = logging.getLogger("storage")
 
 GITHUB_API = "https://api.github.com"
+
+
+def is_cloud() -> bool:
+    """偵測是否在 Streamlit Cloud 執行（檔案系統會重啟）."""
+    # Streamlit Cloud 把程式掛在 /mount/src/... 路徑下
+    try:
+        here = str(Path(__file__).resolve())
+        if "/mount/src" in here or "\\mount\\src" in here:
+            return True
+    except Exception:
+        pass
+    # 額外的環境變數判斷
+    if os.getenv("STREAMLIT_CLOUD", "").lower() in ("1", "true", "yes"):
+        return True
+    hostname = os.getenv("HOSTNAME", "").lower()
+    if "streamlit" in hostname:
+        return True
+    return False
 
 
 def _cfg(db_path: str | None = None) -> dict | None:

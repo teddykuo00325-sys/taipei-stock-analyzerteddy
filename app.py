@@ -471,8 +471,10 @@ if mode == "🎯 今日選股":
                     st.rerun()
                 else:
                     st.warning(f"⚠️ {msg}")
+        elif storage.is_cloud():
+            st.caption("⚠️ 雲端未設 secrets，重啟會遺失歷史")
         else:
-            st.caption("⚠️ 未設定 GitHub secrets，無法跨重啟保留")
+            st.caption("💻 本機執行：資料已存於 data/ohlcv.db，無需備份")
 
     st.sidebar.caption("💡 首次掃描約 2~5 分鐘；第二次之後走快取只需 30 秒")
 
@@ -1406,13 +1408,19 @@ elif mode == "📊 主動式ETF":
                         "自動清除過期資料")
 
     if not storage_cfg.get("configured"):
-        st.warning(
-            "⚠️ **GitHub 持久化未設定** — Streamlit Cloud 重啟會遺失歷史資料。\n\n"
-            "設定方式：到 **Streamlit Cloud → Settings → Secrets** 貼上：\n"
-            "```toml\n[github]\ntoken = \"ghp_...\"  # 建 PAT 並給 repo 寫入權限\n"
-            "owner = \"teddykuo00325-sys\"\nrepo = \"taipei-stock-analyzerteddy\"\n"
-            "branch = \"main\"\ndb_path = \"data/etf.db\"\n```"
-        )
+        if storage.is_cloud():
+            st.warning(
+                "⚠️ **GitHub 持久化未設定** — Streamlit Cloud 重啟會遺失歷史資料。\n\n"
+                "設定方式：到 **Streamlit Cloud → Settings → Secrets** 貼上：\n"
+                "```toml\n[github]\ntoken = \"ghp_...\"  # 建 PAT 並給 repo 寫入權限\n"
+                "owner = \"teddykuo00325-sys\"\nrepo = \"taipei-stock-analyzerteddy\"\n"
+                "branch = \"main\"\ndb_path = \"data/etf.db\"\n```"
+            )
+        else:
+            st.caption(
+                "💻 本機執行：資料存於 `data/etf.db`，重啟仍保留。"
+                "只有部署到 Streamlit Cloud 才需要設定 GitHub 備份。"
+            )
 
     # 操作區
     op_col1, op_col2, op_col3 = st.columns(3)
