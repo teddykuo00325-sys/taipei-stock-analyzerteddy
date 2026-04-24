@@ -199,16 +199,19 @@ def generate_signals(df: pd.DataFrame) -> list[Signal]:
 # 停損停利
 # ===================================================================
 def stop_levels(df: pd.DataFrame) -> dict:
-    """朱式三層停損：
-    - 短線：MA10（跌破出）
-    - 中線：MA20（跌破出）
+    """朱式三層停損（停損價為均線「跌破確認」= MA * 0.98）：
+    - 短線：跌破 MA10（= MA10 × 0.98 視為確認跌破）
+    - 中線：跌破 MA20（= MA20 × 0.98）
     - 絕對：前 20 日低點（絕不破）
     """
     last = df.iloc[-1]
     recent_low = df["low"].tail(20).min()
+    ma10 = last.get("ma10")
+    ma20 = last.get("ma20")
     return {
-        "short_stop": float(last["ma10"]) if not pd.isna(last.get("ma10")) else None,
-        "mid_stop": float(last["ma20"]) if not pd.isna(last.get("ma20")) else None,
+        # 停損設在 MA 下方 2%：代表「確認跌破」，給均線一個緩衝
+        "short_stop": float(ma10) * 0.98 if not pd.isna(ma10) else None,
+        "mid_stop": float(ma20) * 0.98 if not pd.isna(ma20) else None,
         "abs_stop": float(recent_low),
     }
 

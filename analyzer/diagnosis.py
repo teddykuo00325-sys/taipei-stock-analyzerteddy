@@ -218,19 +218,47 @@ def diagnose(df: pd.DataFrame,
                                         trend["resistance"], trend["support"])
 
     price = float(df["close"].iloc[-1])
-    ma10 = df["ma10"].iloc[-1]
-    ma20 = df["ma20"].iloc[-1]
+    ma5 = df["ma5"].iloc[-1] if "ma5" in df.columns else None
+    ma10 = df["ma10"].iloc[-1] if "ma10" in df.columns else None
+    ma20 = df["ma20"].iloc[-1] if "ma20" in df.columns else None
     entry_zone = None
-    if stance in ("多方", "偏多") and not pd.isna(ma10) and not pd.isna(ma20):
-        lo, hi = sorted([float(ma10), float(ma20)])
-        entry_zone = (lo, hi)
+    if stance in ("多方", "偏多"):
+        # 多頭回測買點：
+        # - MA5 / MA10 / 現價 三者取合適範圍
+        # - 下緣 = MA10（保留朱式回測不破 MA10 精神）
+        # - 上緣 = MA5（更接近現價）；若 MA5 也遠低於現價，取現價 × 0.97
+        candidates = []
+        if not pd.isna(ma10):
+            candidates.append(float(ma10))
+        if not pd.isna(ma5):
+            candidates.append(float(ma5))
+        upper = price * 0.97  # 現價回檔 3% 作為備選上緣
+        candidates.append(upper)
+        if len(candidates) >= 2:
+            # 取最低為下緣（MA10）、次低為上緣（MA5 or 現價-3%）
+            candidates_sorted = sorted(candidates)
+            lo = candidates_sorted[0]
+            hi = candidates_sorted[min(1, len(candidates_sorted) - 1)]
+            # 若區間太窄 (<0.5%)，擴展為 [MA10, MA5]
+            if abs(hi - lo) / max(lo, 1) < 0.005 and not pd.isna(ma5) \
+                    and not pd.isna(ma10):
+                lo = min(float(ma10), float(ma5))
+                hi = max(float(ma10), float(ma5))
+            entry_zone = (round(lo, 2), round(hi, 2))
     elif stance == "中立":
-        entry_zone = (float(trend["support"]), float(trend["support"]) * 1.02)
+        entry_zone = (float(trend["support"]),
+                      float(trend["support"]) * 1.02)
 
+    # R:R 改以「實際進場價」計算：
+    # 若現價已高於進場區，預期等拉回至進場區上緣執行 → 以進場上緣計算
+    # 否則以現價計算
     risk_reward = None
+    entry_ref = price
+    if entry_zone and price > entry_zone[1]:
+        entry_ref = float(entry_zone[1])
     if target_price and stops.get("short_stop"):
-        reward = abs(target_price - price)
-        risk = abs(price - stops["short_stop"])
+        reward = abs(target_price - entry_ref)
+        risk = abs(entry_ref - stops["short_stop"])
         if risk > 0:
             risk_reward = round(reward / risk, 2)
 
