@@ -210,12 +210,26 @@ def render_market_sidebar():
     today_str = _dt_sb.date.today().strftime("%Y-%m-%d")
     weekday_str = "一二三四五六日"[_dt_sb.date.today().weekday()]
     st.sidebar.divider()
-    st.sidebar.markdown(
-        f"<div style='text-align:center; color:#aaa; font-size:13px;'>"
-        f"📅 今日 {today_str}　(星期{weekday_str})</div>",
-        unsafe_allow_html=True,
-    )
-    with st.sidebar.expander("📊 國際行情", expanded=True):
+
+    # 日期 + 立即更新按鈕同列
+    d_col, b_col = st.sidebar.columns([3, 1])
+    with d_col:
+        st.markdown(
+            f"<div style='padding-top:6px; color:#aaa; font-size:13px;'>"
+            f"📅 {today_str}　星期{weekday_str}</div>",
+            unsafe_allow_html=True,
+        )
+    with b_col:
+        if st.button("🔄", key="market_refresh",
+                     help="立即更新國際行情與貴金屬牌價",
+                     use_container_width=True):
+            marketdata.invalidate()
+            st.rerun()
+
+    intl_upd = marketdata.intl_last_update()
+    gck_upd = marketdata.gck_last_update()
+
+    with st.sidebar.expander(f"📊 國際行情　(⏱ {intl_upd})", expanded=True):
         try:
             intl = marketdata.fetch_international()
         except Exception as e:
@@ -229,8 +243,10 @@ def render_market_sidebar():
                     f"{q.price:,.{q.precision}f}",
                     f"{q.change:+.{q.precision}f} ({q.change_pct:+.2f}%)",
                 )
+        st.caption("每 60 分鐘自動更新，點上方 🔄 手動立即更新")
 
-    with st.sidebar.expander("💰 展寬貴金屬當日回收牌價", expanded=False):
+    with st.sidebar.expander(
+            f"💰 展寬貴金屬當日回收牌價　(⏱ {gck_upd})", expanded=False):
         gck = marketdata.fetch_gck99()
         err = gck.get("_err")
         if err:
@@ -239,7 +255,7 @@ def render_market_sidebar():
             if k.startswith("_") or v == "N/A":
                 continue
             st.markdown(f"**{k}**  \n`{v}`")
-        st.caption("資料來源：gck99.com.tw（每 10 分鐘更新一次快取）")
+        st.caption("資料來源：gck99.com.tw（每 60 分鐘更新一次快取）")
 
 
 # ============================================================

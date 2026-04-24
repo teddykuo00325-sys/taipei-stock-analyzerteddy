@@ -44,8 +44,32 @@ class Quote:
     precision: int
 
 
-# ---------- 國際 (yfinance) ----------
+# ---------- Caches ----------
 _intl_cache: dict = {"t": 0.0, "v": {}}
+_gck_cache: dict = {"t": 0.0, "v": {}}
+
+
+def intl_last_update() -> str:
+    """回傳國際行情上次更新時間字串."""
+    import datetime as _dt
+    if _intl_cache["t"] == 0:
+        return "—"
+    return _dt.datetime.fromtimestamp(_intl_cache["t"]).strftime("%H:%M")
+
+
+def gck_last_update() -> str:
+    import datetime as _dt
+    if _gck_cache["t"] == 0:
+        return "—"
+    return _dt.datetime.fromtimestamp(_gck_cache["t"]).strftime("%H:%M")
+
+
+def invalidate() -> None:
+    """強制清除快取（立即更新時呼叫）."""
+    _intl_cache["v"] = {}
+    _intl_cache["t"] = 0.0
+    _gck_cache["v"] = {}
+    _gck_cache["t"] = 0.0
 
 
 def _fetch_one(key: str) -> Quote | None:
@@ -64,7 +88,7 @@ def _fetch_one(key: str) -> Quote | None:
         return None
 
 
-def fetch_international(max_age_sec: int = 300) -> dict[str, Quote]:
+def fetch_international(max_age_sec: int = 3600) -> dict[str, Quote]:
     now = time()
     if _intl_cache["v"] and now - _intl_cache["t"] < max_age_sec:
         return _intl_cache["v"]
@@ -80,10 +104,7 @@ def fetch_international(max_age_sec: int = 300) -> dict[str, Quote]:
 
 
 # ---------- 展寬貴金屬 (GCK99) ----------
-_gck_cache: dict = {"t": 0.0, "v": {}}
-
-
-def fetch_gck99(max_age_sec: int = 600) -> dict[str, str]:
+def fetch_gck99(max_age_sec: int = 3600) -> dict[str, str]:
     """回傳 {品項: 顯示字串}；失敗則全部為 N/A."""
     now = time()
     if _gck_cache["v"] and now - _gck_cache["t"] < max_age_sec:
