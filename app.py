@@ -79,27 +79,52 @@ def render_card(row: pd.Series, rank: int):
     df = row["_df_tail"]
     score_icon = "🔴" if d.score > 0 else "🟢" if d.score < 0 else "⚪"
     chg_sign = "+" if row["漲跌%"] >= 0 else ""
+    chg_color = "#e55353" if row["漲跌%"] > 0 else "#3dbd6e" \
+        if row["漲跌%"] < 0 else "#aaa"
     import datetime as _dtk
-    now_str = _dtk.datetime.now().strftime("%Y-%m-%d %H:%M")
+    now_str = _dtk.datetime.now().strftime("%m-%d %H:%M")
     entry_str = ""
     if d.entry_zone:
         lo, hi = d.entry_zone
         price_now = row["收盤"]
         if price_now < lo:
-            hint = "✅ 低於進場區"
+            hint = "可佈局"
         elif price_now <= hi:
-            hint = "✅ 位於進場區"
+            hint = "位於進場區"
         else:
-            hint = "⚠️ 高於進場區"
-        entry_str = f" · 建議進場 {lo:.2f}~{hi:.2f}  {hint}"
+            hint = "已突破，等拉回"
+        entry_str = (f"<span style='color:#ffdd55;'>💡 進場 "
+                     f"{lo:.2f}~{hi:.2f}</span> "
+                     f"<span style='color:#999;'>({hint})</span>")
 
     with st.container(border=True):
+        # --- 標題列（統一大小 15-16px）---
         st.markdown(
-            f"### #{rank}　{row['名稱']} ({row['代號']})　"
-            f"<small>現價 {row['收盤']:.2f} ({chg_sign}{row['漲跌%']:.2f}%)　·　"
-            f"🕒 {now_str}</small>　"
-            f"{score_icon} **分數 {d.score:+d}**　"
-            f"{ACTION_ICONS.get(d.action, '')} **{d.action}**{entry_str}",
+            f"""
+            <div style='line-height:1.45;'>
+              <div>
+                <span style='font-size:17px; font-weight:700;'>
+                  #{rank} {row['名稱']} ({row['代號']})
+                </span>
+                <span style='font-size:15px; color:#f5c342; font-weight:600; margin-left:10px;'>
+                  {row['收盤']:.2f}
+                </span>
+                <span style='font-size:14px; color:{chg_color}; margin-left:6px;'>
+                  {chg_sign}{row['漲跌%']:.2f}%
+                </span>
+                <span style='font-size:12px; color:#888; margin-left:10px;'>
+                  🕒 {now_str}
+                </span>
+              </div>
+              <div style='font-size:14px; margin-top:4px;'>
+                {score_icon} <b>分數 {d.score:+d}</b>
+                <span style='color:#888;'>·</span>
+                {ACTION_ICONS.get(d.action, '')} <b>{d.action}</b>
+                <span style='color:#888; margin-left:6px;'>·</span>
+                {entry_str}
+              </div>
+            </div>
+            """,
             unsafe_allow_html=True,
         )
 
@@ -117,24 +142,27 @@ def render_card(row: pd.Series, rank: int):
             fib_nearest = row.get("費波", "—")
             hurst_val = row.get("Hurst")
             hurst_str = f"{hurst_val:.2f}" if hurst_val is not None else "—"
-            # 2 欄資訊（3 列 × 2 欄）
-            info_l, info_r = st.columns(2)
-            with info_l:
-                st.markdown(
-                    f"**均線**　{d.ma_state}  \n"
-                    f"**量價**　{vol_brief}  \n"
-                    f"**法人**　{row['法人(張)']} 張  \n"
-                    f"**Hurst**　{hurst_str}",
-                )
-            with info_r:
-                st.markdown(
-                    f"**波浪**　{d.wave_label}  \n"
-                    f"**KD/RSI**　{row['KD']} / {row['RSI']}  \n"
-                    f"**融資/券**　{row['融資/券']}  \n"
-                    f"**費波**　{fib_nearest}",
-                )
-            if d.weekly_note:
-                st.caption(f"📅 週線　{d.weekly_note.replace('週線', '').strip()}")
+            weekly_br = (d.weekly_note.replace("週線", "").strip()
+                         if d.weekly_note else "—")
+            # 2 欄 × 4 列，所有字體 13px 統一
+            info_html = f"""
+            <div style='font-size:13px; line-height:1.7;'>
+              <div style='display:grid; grid-template-columns:1fr 1fr; gap:4px 10px;'>
+                <div><span style='color:#888;'>均線</span>　{d.ma_state}</div>
+                <div><span style='color:#888;'>波浪</span>　{d.wave_label}</div>
+                <div><span style='color:#888;'>量價</span>　{vol_brief}</div>
+                <div><span style='color:#888;'>KD/RSI</span>　{row['KD']} / {row['RSI']}</div>
+                <div><span style='color:#888;'>法人</span>　{row['法人(張)']} 張</div>
+                <div><span style='color:#888;'>融資/券</span>　{row['融資/券']}</div>
+                <div><span style='color:#888;'>Hurst</span>　{hurst_str}</div>
+                <div><span style='color:#888;'>費波</span>　{fib_nearest}</div>
+              </div>
+              <div style='margin-top:6px; color:#888; font-size:12px;'>
+                📅 週線　{weekly_br}
+              </div>
+            </div>
+            """
+            st.markdown(info_html, unsafe_allow_html=True)
 
         pa = st.columns([2, 2, 2, 2, 2])
         if d.target_price:
@@ -1073,6 +1101,10 @@ else:
             trend=trend_info,
             candle_history=candle_hist,
             econ=diag.econ,
+            entry_zone=diag.entry_zone,
+            target_price=diag.target_price,
+            short_stop=diag.short_stop,
+            mid_stop=diag.mid_stop,
         )
         st.plotly_chart(fig, use_container_width=True,
                         config={

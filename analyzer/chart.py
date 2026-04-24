@@ -8,7 +8,9 @@ from plotly.subplots import make_subplots
 
 def build(df: pd.DataFrame, title: str = "", patterns=None,
           fib=None, wave_pivots=None, trend=None,
-          candle_history=None, econ=None) -> go.Figure:
+          candle_history=None, econ=None,
+          entry_zone=None, target_price=None,
+          short_stop=None, mid_stop=None) -> go.Figure:
     """建構多面板技術圖表.
 
     參數：
@@ -16,8 +18,12 @@ def build(df: pd.DataFrame, title: str = "", patterns=None,
       fib: FibAnalysis                — 費波納契級位
       wave_pivots: list[(idx, H/L, price)] — 波浪轉折點
       trend: dict                      — {support, resistance}
-      candle_history: list[(df_idx, [Candle, ...])] — 歷史 K 線型態
-      econ: Econ                       — 計量物理結果（供右上角標註）
+      candle_history: list[(df_idx, [Candle, ...])]
+      econ: Econ                       — 計量物理 (供右上角標註)
+      entry_zone: (lo, hi)             — 建議進場區間（畫水平帶）
+      target_price: float              — 目標價（橘色水平線）
+      short_stop: float                — 短線停損（綠色水平線）
+      mid_stop: float                  — 中線停損（淡綠水平線）
     """
     patterns = patterns or []
     candle_history = candle_history or []
@@ -251,18 +257,83 @@ def build(df: pd.DataFrame, title: str = "", patterns=None,
                 name="中性型態", showlegend=True,
             ), row=1, col=1)
 
-    # --- Hurst / 計量物理角落標註 ---
-    if econ is not None:
-        fig.add_annotation(
-            xref="paper", yref="paper", x=0.01, y=0.99,
-            text=(f"🔬 Hurst={econ.hurst:.2f} · "
-                  f"波動 {econ.vol_recent * 100:.0f}%（x{econ.vol_ratio:.2f}）"),
-            showarrow=False,
-            font=dict(size=11, color="#ccc"),
-            bgcolor="rgba(20,24,35,0.8)",
-            bordercolor="rgba(148,103,189,0.4)", borderwidth=0.8,
-            borderpad=4, xanchor="left", yanchor="top",
+    # --- 進場區 / 目標 / 停損 水平線（交易計畫）---
+    if entry_zone:
+        lo_e, hi_e = entry_zone
+        fig.add_hrect(
+            y0=lo_e, y1=hi_e,
+            fillcolor="rgba(255,255,0,0.12)",
+            layer="below", line_width=0,
+            annotation_text=f"💡 建議進場區 {lo_e:.2f} ~ {hi_e:.2f}",
+            annotation_position="top right",
+            annotation_font=dict(size=10, color="#ffdd00"),
+            row=1, col=1,
         )
+    if target_price:
+        fig.add_hline(
+            y=target_price, line_dash="solid",
+            line_color="rgba(255,165,0,0.85)", line_width=2,
+            annotation_text=f"🎯 目標 {target_price:.2f}",
+            annotation_position="top right",
+            annotation_font_color="#ffa500",
+            annotation_font_size=11,
+            row=1, col=1,
+        )
+    if short_stop:
+        fig.add_hline(
+            y=short_stop, line_dash="longdashdot",
+            line_color="rgba(44,160,44,0.9)", line_width=2,
+            annotation_text=f"🛑 短線停損 {short_stop:.2f}",
+            annotation_position="bottom right",
+            annotation_font_color="#2ca02c",
+            annotation_font_size=11,
+            row=1, col=1,
+        )
+    if mid_stop and (not short_stop or abs(mid_stop - short_stop) > 0.5):
+        fig.add_hline(
+            y=mid_stop, line_dash="dot",
+            line_color="rgba(44,160,44,0.55)", line_width=1.5,
+            annotation_text=f"中線停損 {mid_stop:.2f}",
+            annotation_position="bottom right",
+            annotation_font_color="#2ca02c",
+            annotation_font_size=10,
+            row=1, col=1,
+        )
+
+    # --- 右上角技術指標即時數值 ---
+    if len(df) > 0:
+        last_row = df.iloc[-1]
+        lines: list[str] = []
+        ma_parts = []
+        for p in (5, 10, 20, 60):
+            col = f"ma{p}"
+            if col in df.columns and not pd.isna(last_row.get(col)):
+                ma_parts.append(f"MA{p}={last_row[col]:.2f}")
+        if ma_parts:
+            lines.append(" · ".join(ma_parts))
+        kd_rsi = []
+        if "k" in df.columns and not pd.isna(last_row.get("k")):
+            kd_rsi.append(f"K={last_row['k']:.0f}")
+            kd_rsi.append(f"D={last_row['d']:.0f}")
+        if "rsi" in df.columns and not pd.isna(last_row.get("rsi")):
+            kd_rsi.append(f"RSI={last_row['rsi']:.1f}")
+        if "macd_dif" in df.columns and not pd.isna(last_row.get("macd_dif")):
+            kd_rsi.append(f"MACD={last_row['macd_dif']:.2f}")
+        if kd_rsi:
+            lines.append(" · ".join(kd_rsi))
+        if econ is not None:
+            lines.append(f"Hurst={econ.hurst:.2f} · "
+                         f"波動 {econ.vol_recent * 100:.0f}% (x{econ.vol_ratio:.2f})")
+        if lines:
+            fig.add_annotation(
+                xref="paper", yref="paper", x=0.99, y=0.99,
+                text="<br>".join(lines),
+                showarrow=False, align="right",
+                font=dict(size=10, color="#ddd"),
+                bgcolor="rgba(20,24,35,0.88)",
+                bordercolor="rgba(255,255,255,0.25)", borderwidth=0.8,
+                borderpad=5, xanchor="right", yanchor="top",
+            )
 
     # --- 成交量 ---
     vol_color = [

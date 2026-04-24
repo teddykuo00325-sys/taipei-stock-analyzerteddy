@@ -229,12 +229,10 @@ def diagnose(df: pd.DataFrame,
 
     risk_reward = None
     if target_price and stops.get("short_stop"):
-        reward = target_price - price
-        risk = price - stops["short_stop"]
-        if risk > 0 and reward > 0:
+        reward = abs(target_price - price)
+        risk = abs(price - stops["short_stop"])
+        if risk > 0:
             risk_reward = round(reward / risk, 2)
-        elif risk < 0 and reward < 0:
-            risk_reward = round(abs(reward / risk), 2)
 
     bits: list[str] = [f"{ma_state}；{vol_note}"]
     if trend_note:
