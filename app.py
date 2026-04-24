@@ -171,6 +171,74 @@ ACTION_ICONS = {"強力買進": "🔴🔴", "買進": "🔴", "觀望": "⚪",
 
 
 # ============================================================
+# 🚀 全域快取 wrappers — 減少重算，讓 Streamlit rerun 快取即回
+# ============================================================
+def _today_key() -> str:
+    import datetime as _dt
+    return _dt.date.today().isoformat()
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def cached_analyze(code: str, period: str, _day: str,
+                   include_weekly: bool = True,
+                   school: str | None = None):
+    """完整分析：df + indicators + weekly + diagnosis. TTL 15 min.
+    參數 _day 當日期 key，自動每日失效."""
+    df_raw = data.fetch(code, period=period, interval="1d")
+    df_full = indicators.add_all(df_raw)
+    wk = None
+    if include_weekly:
+        try:
+            wk_raw = data.fetch(code, period="2y", interval="1wk")
+            wk = indicators.add_all(wk_raw)
+        except Exception:
+            pass
+    diag = diagnosis.diagnose(df_full, code=code,
+                              weekly_df=wk, school=school)
+    return df_full, wk, diag
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def cached_targets(code: str, _day: str):
+    """多目標價 + 法人共識（含 yfinance info 慢呼叫）. TTL 30 min."""
+    df_c, wk_c, diag_c = cached_analyze(code, "1y", _day)
+    mo = None
+    try:
+        mo_raw = data.fetch(code, period="5y", interval="1mo")
+        mo = indicators.add_all(mo_raw)
+    except Exception:
+        pass
+    rev = cached_revenue(code, _day)
+    return targets.compute_all(df_c, code, fib=diag_c.fib,
+                               weekly_df=wk_c, monthly_df=mo,
+                               revenue_info=rev)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def cached_revenue(code: str, _day: str):
+    try:
+        return revenue.for_code(code)
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def cached_shareholders(code: str, _day: str):
+    try:
+        return shareholders.for_code(code)
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def cached_industry_info(code: str):
+    try:
+        return industry.info_for(code)
+    except Exception:
+        return None
+
+
+# ============================================================
 # 卡片渲染 (今日選股用)
 # ============================================================
 def render_card(row: pd.Series, rank: int, key_ns: str = "card"):
@@ -296,13 +364,11 @@ def render_card(row: pd.Series, rank: int, key_ns: str = "card"):
         )
 
         # === 中型 K-chart（K + Vol + KD 三副圖）===
-        try:
-            from analyzer import patterns as _p
-            msup, mres = _p.multi_sr(df, n=3)
-        except Exception:
-            msup, mres = [], []
+        # diag 已算好 multi_supports/resistances，直接用
+        msup = d.multi_supports if d.multi_supports else []
+        mres = d.multi_resistances if d.multi_resistances else []
         p_hist = row.get("_patterns_hist") \
-            if "_patterns_hist" in row else None
+            if "_patterns_hist" in row else d.candle_history
         fig = chart.build_card(
             df, height=400,
             supports=msup, resistances=mres,
@@ -1106,15 +1172,22 @@ elif mode == "⭐ 收藏清單":
     errors: list[tuple[str, str]] = []
 
     progress = st.progress(0.0)
+    day_key = _today_key()
     for idx, code in enumerate(codes):
         progress.progress((idx + 1) / len(codes), text=f"分析 {code}…")
         try:
-            raw = data.fetch(code, period="1y", interval="1d")
-            raw = indicators.add_all(raw)
+            # 走快取：同日同股票只跑一次
+            raw, wk, d = cached_analyze(code, "1y", day_key,
+                                         include_weekly=False,
+                                         school=DEFAULT_SCHOOL)
+            # 盤中即時覆蓋（不走快取，因為需要最新價）
             q = quotes.get(code)
-            if q:
+            if q and q.current:
                 raw = live.overlay_today(raw, q)
-            d = diagnosis.diagnose(raw, code=code)
+                # 重新診斷（含最新價）
+                raw = indicators.add_all(raw)
+                d = diagnosis.diagnose(raw, code=code,
+                                       school=DEFAULT_SCHOOL)
             info_row = ind_df[ind_df["code"] == code]
             nm = info_row.iloc[0]["short_name"] if not info_row.empty else code
             last = raw.iloc[-1]
@@ -1129,7 +1202,6 @@ elif mode == "⭐ 收藏清單":
                 if lo <= float(last["close"]) <= hi:
                     in_entry = True
 
-            # 建構 row 供 render_card 使用（欄位對照 screener 的輸出）
             row = {
                 "代號": code,
                 "名稱": nm,
@@ -1148,7 +1220,8 @@ elif mode == "⭐ 收藏清單":
                          and d.fib.nearest_distance_pct <= 2.5) else "—"),
                 "_df_tail": raw.tail(90).copy(),
                 "_diag": d,
-                "_patterns_hist": _cs.scan_history(raw, lookback=60),
+                # 使用 diag 內建已算好的 candle_history (省一次計算)
+                "_patterns_hist": d.candle_history,
                 "_in_entry_zone": in_entry,
             }
             (rows_in_zone if in_entry else rows_other).append(row)
@@ -1693,41 +1766,46 @@ else:
                 "型態學、波浪理論、三大法人、融資融券 → 產生個股診斷書。")
         st.stop()
 
-    with st.spinner("抓取資料中…"):
-        try:
-            df_raw = data.fetch(code, period=period_map[period_label],
-                                interval=interval_map[interval_label])
-        except ValueError as e:
-            st.error(str(e))
-            st.stop()
-        weekly_df = None
-        if interval_label == "日線":
+    # === 統一快取路徑：日線直接走 cached_analyze ===
+    live_quote = None
+    if interval_label == "日線":
+        with st.spinner("分析中…（首次約 2-5 秒，之後走快取）"):
             try:
-                wk_raw = data.fetch(code, period="2y", interval="1wk")
-                weekly_df = indicators.add_all(wk_raw)
-            except Exception:
-                weekly_df = None
-        name = data.get_name(code)
-
-        # --- 盤中即時覆蓋 ---
-        live_quote = None
-        if live_on and interval_label == "日線":
-            live_quote = live.quote(code)
-            if live_quote:
-                df_raw = live.overlay_today(df_raw, live_quote)
-
-    @st.cache_data(ttl=300, show_spinner=False,
-                   hash_funcs={pd.DataFrame: lambda d: (
-                       len(d),
-                       float(d["close"].iloc[-1]) if len(d) else 0,
-                       str(d.index[-1]) if len(d) else "",
-                   )})
-    def _cached_add_indicators(raw: pd.DataFrame) -> pd.DataFrame:
-        return indicators.add_all(raw)
-
-    df = _cached_add_indicators(df_raw)
-    diag = diagnosis.diagnose(df, code=code, weekly_df=weekly_df,
-                              school=DEFAULT_SCHOOL)
+                df, weekly_df, diag = cached_analyze(
+                    code, period_map[period_label], _today_key(),
+                    include_weekly=True, school=DEFAULT_SCHOOL,
+                )
+            except ValueError as e:
+                st.error(str(e))
+                st.stop()
+            except Exception as e:
+                st.error(f"分析失敗：{e}")
+                st.stop()
+            # 盤中即時覆蓋
+            if live_on:
+                live_quote = live.quote(code)
+                if live_quote:
+                    df_raw = live.overlay_today(df, live_quote)
+                    df = indicators.add_all(df_raw)
+                    diag = diagnosis.diagnose(df, code=code,
+                                              weekly_df=weekly_df,
+                                              school=DEFAULT_SCHOOL)
+            name = data.get_name(code)
+    else:
+        # 週線 / 月線：直接呼叫（頻率低）
+        with st.spinner("抓取資料中…"):
+            try:
+                df_raw = data.fetch(code, period=period_map[period_label],
+                                    interval=interval_map[interval_label])
+            except ValueError as e:
+                st.error(str(e))
+                st.stop()
+            df = indicators.add_all(df_raw)
+            weekly_df = None
+            diag = diagnosis.diagnose(df, code=code,
+                                      weekly_df=None,
+                                      school=DEFAULT_SCHOOL)
+            name = data.get_name(code)
 
     # --- 即時狀態 banner ---
     if live_on and interval_label == "日線":
@@ -1757,15 +1835,10 @@ else:
     chg = price - prev["close"]
     chg_pct = chg / prev["close"] * 100
 
-    info = industry.info_for(code)
+    info = cached_industry_info(code)
     ind_name = info["industry"] if info else "—"
     full_name = info["full_name"] if info else name
-    # 月營收（可選）
-    rev_info = None
-    try:
-        rev_info = revenue.for_code(code)
-    except Exception:
-        pass
+    rev_info = cached_revenue(code, _today_key())
 
     # ============================================================
     # 📌 頂部：大標題列（名稱/代號 + 現價超大）
@@ -2032,12 +2105,15 @@ else:
 
     # ---- 📉 圖表 ----
     with tab_chart:
-        from analyzer import candlestick as _cs
-        from analyzer import patterns as _pat
-        from analyzer import wave as _wave
-        w_detail = _wave.detect(df)
-        candle_hist = _cs.scan_history(df, lookback=90)
-        multi_sup, multi_res = _pat.multi_sr(df, n=3)
+        # 直接用 diag 內已計算好的，省去重複運算
+        candle_hist = diag.candle_history
+        multi_sup = diag.multi_supports
+        multi_res = diag.multi_resistances
+        # wave_pivots 需 list[(idx, H/L, price)] 格式，diag 已提供
+        class _W:
+            pass
+        w_detail = _W()
+        w_detail.pivots = diag.wave_pivots
 
         # ---- 型態銘牌（主 bull/bear 型態）----
         primary_pat = None
@@ -2149,7 +2225,7 @@ else:
 
         # ---- 底部：籌碼 summary bar + 成本區 ----
         try:
-            holder_sum = shareholders.for_code(code)
+            holder_sum = cached_shareholders(code, _today_key())
         except Exception:
             holder_sum = None
         # 成本區（近 30 日均價 ± σ）
@@ -2340,18 +2416,8 @@ else:
     with tab_level:
         # ========== 多目標價區 ==========
         st.markdown("#### 🎯 多層級目標價")
-        # 準備月線資料
-        monthly_df = None
-        try:
-            monthly_raw = data.fetch(code, period="5y", interval="1mo")
-            monthly_df = monthly_raw
-        except Exception:
-            pass
-        target_data = targets.compute_all(
-            df, code, fib=diag.fib,
-            weekly_df=weekly_df, monthly_df=monthly_df,
-            revenue_info=rev_info if "rev_info" in dir() else None,
-        )
+        # 走快取（15-30 min TTL，yfinance info 慢呼叫只跑一次）
+        target_data = cached_targets(code, _today_key())
         t_list = target_data["targets"]
         if t_list:
             # 法人共識卡
@@ -2533,7 +2599,7 @@ else:
 
         st.markdown("#### 📦 股權分布 (集保 TDCC · 每週更新)")
         try:
-            holder = shareholders.for_code(code)
+            holder = cached_shareholders(code, _today_key())
         except Exception:
             holder = None
         if not holder:

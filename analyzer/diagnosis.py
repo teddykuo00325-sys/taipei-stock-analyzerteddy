@@ -49,6 +49,10 @@ class Diagnosis:
     wave_confidence: str = ""
     wave_note: str = ""
     wave_score: int = 0
+    wave_pivots: list = field(default_factory=list)  # (idx, H/L, price)
+    candle_history: list = field(default_factory=list)  # [(idx, [Candle])]
+    multi_supports: list = field(default_factory=list)
+    multi_resistances: list = field(default_factory=list)
     # 計量物理
     econ: "econophysics.Econ | None" = None
     econ_score: int = 0
@@ -155,6 +159,12 @@ def diagnose(df: pd.DataFrame,
     econ_s, econ_note = econophysics.score_adj(df)
     fib_obj = fibonacci.analyze(df)
     fib_s, fib_note = fibonacci.score_adj(df)
+    # 一併算好 candle_history 與 multi S/R 供下游重用
+    candle_hist = candlestick.scan_history(df, lookback=90)
+    try:
+        msup, mres = patterns.multi_sr(df, n=3)
+    except Exception:
+        msup, mres = [], []
 
     inst_info = None
     inst_s = 0
@@ -334,4 +344,8 @@ def diagnose(df: pd.DataFrame,
         econ=econ_obj, econ_score=econ_s, econ_note=econ_note,
         fib=fib_obj, fib_score=fib_s, fib_note=fib_note,
         continuation_label=cont_label,
+        wave_pivots=w.pivots,
+        candle_history=candle_hist,
+        multi_supports=msup,
+        multi_resistances=mres,
     )
