@@ -9,7 +9,8 @@ import logging
 from analyzer import (chart, data, diagnosis, etf, etf_scraper,
                       indicators, industry, live, marketdata,
                       moneyflow, price_cache, revenue, schools,
-                      screener, shareholders, storage, watchlist)
+                      screener, shareholders, storage, targets,
+                      watchlist)
 
 logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 
@@ -2326,8 +2327,121 @@ else:
         else:
             st.caption("近期無明顯型態。")
 
-    # ---- 🎯 關鍵價位（費波 + 支撐壓力） ----
+    # ---- 🎯 關鍵價位（多目標 + 費波 + 支撐壓力） ----
     with tab_level:
+        # ========== 多目標價區 ==========
+        st.markdown("#### 🎯 多層級目標價")
+        # 準備月線資料
+        monthly_df = None
+        try:
+            monthly_raw = data.fetch(code, period="5y", interval="1mo")
+            monthly_df = monthly_raw
+        except Exception:
+            pass
+        target_data = targets.compute_all(
+            df, code, fib=diag.fib,
+            weekly_df=weekly_df, monthly_df=monthly_df,
+            revenue_info=rev_info if "rev_info" in dir() else None,
+        )
+        t_list = target_data["targets"]
+        if t_list:
+            # 法人共識卡
+            analyst = target_data["analyst"]
+            if analyst:
+                rec_color = {
+                    "strong_buy": "#d62728", "buy": "#e67e22",
+                    "hold": "#f5c342", "sell": "#3dbd6e",
+                    "strong_sell": "#2ca02c", "none": "#888",
+                }.get(analyst["recommend"], "#888")
+                rec_label = {
+                    "strong_buy": "強烈買進", "buy": "買進",
+                    "hold": "持有", "sell": "賣出",
+                    "strong_sell": "強烈賣出", "none": "—",
+                }.get(analyst["recommend"], analyst["recommend"])
+                st.markdown(
+                    f"""
+                    <div style='padding:12px 18px;
+                                background:linear-gradient(90deg,
+                                    rgba(148,103,189,0.18), rgba(148,103,189,0));
+                                border-left:4px solid #9467bd;
+                                border-radius:6px; margin-bottom:10px;'>
+                      <div style='display:flex;
+                                  justify-content:space-between;
+                                  flex-wrap:wrap; align-items:baseline;'>
+                        <div>
+                          <span style='font-size:16px; font-weight:700;'>
+                            🏦 法人共識目標</span>
+                          <span style='color:#aaa; margin-left:8px;
+                                       font-size:12px;'>
+                            {analyst['n']} 位分析師
+                          </span>
+                          <span style='background:{rec_color};
+                                       color:#fff; padding:2px 8px;
+                                       border-radius:8px; font-size:12px;
+                                       font-weight:700; margin-left:10px;'>
+                            {rec_label}
+                          </span>
+                        </div>
+                        <div>
+                          <span style='font-size:26px; font-weight:800;
+                                       color:#9467bd;'>
+                            {analyst['mean']:.2f}
+                          </span>
+                          <span style='color:#9467bd; margin-left:6px;
+                                       font-size:14px;'>
+                            ({(analyst['mean'] / price - 1) * 100:+.1f}%)
+                          </span>
+                        </div>
+                      </div>
+                      <div style='font-size:12px; color:#bbb;
+                                  margin-top:6px;'>
+                        區間 <b style='color:#3dbd6e;'>
+                          {analyst['low']:.2f}</b> (最低) ~
+                        <b style='color:#e55353;'>
+                          {analyst['high']:.2f}</b> (最高)
+                      </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+            # 各目標表格
+            t_rows = [{
+                "目標類型": f"{t.icon} {t.label}",
+                "價格": f"{t.price:,.2f}",
+                "距現價": f"{t.pct:+.2f}%",
+                "信心": t.confidence,
+                "依據": t.note,
+            } for t in t_list]
+            def _col_pct(v):
+                try:
+                    x = float(str(v).replace("%", "").replace("+", ""))
+                except Exception:
+                    return ""
+                if x > 0:
+                    return "color:#e55353; font-weight:600;"
+                if x < 0:
+                    return "color:#3dbd6e; font-weight:600;"
+                return ""
+            styled = (pd.DataFrame(t_rows).style
+                      .map(_col_pct, subset=["距現價"]))
+            st.dataframe(styled, use_container_width=True, hide_index=True)
+
+            # 基本面 PE 卡
+            fund = target_data["fundamental"]
+            if fund:
+                fc = st.columns(3)
+                fc[0].metric("forwardEPS",
+                             f"{fund['forward_eps']:.2f}")
+                fc[1].metric("trailingPE",
+                             f"{fund['trailing_pe']:.1f}")
+                fc[2].metric("forwardPE",
+                             f"{fund['forward_pe']:.1f}"
+                             if fund['forward_pe'] else "—")
+        else:
+            st.info("目前無可用目標價")
+
+        st.markdown("---")
         st.markdown("#### 🌀 黃金切割率（費波納契）")
         fa = diag.fib
         if fa is None:
