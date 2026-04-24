@@ -16,7 +16,7 @@ from typing import Callable
 import pandas as pd
 import yfinance as yf
 
-from . import diagnosis, indicators, institutional, margin, universe
+from . import candlestick, diagnosis, indicators, institutional, margin, universe
 
 
 def _rename(df: pd.DataFrame) -> pd.DataFrame:
@@ -77,6 +77,7 @@ def _score_one(code: str, name: str, df: pd.DataFrame,
             "風報比": d.risk_reward,
             "_df_tail": dff.tail(90).copy(),
             "_diag": d,
+            "_patterns_hist": candlestick.scan_history(dff, lookback=60),
         }
     except Exception:
         return None

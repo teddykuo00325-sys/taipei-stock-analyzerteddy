@@ -98,7 +98,9 @@ def render_card(row: pd.Series, rank: int):
 
         col_c, col_i = st.columns([3, 3])
         with col_c:
-            fig = chart.mini(df, height=180)
+            p_hist = row.get("_patterns_hist") if "_patterns_hist" in row \
+                else None
+            fig = chart.mini(df, height=180, patterns_hist=p_hist)
             st.plotly_chart(fig, use_container_width=True,
                             key=f"mini_{rank}_{row['代號']}",
                             config={"displayModeBar": False})
@@ -328,19 +330,29 @@ if mode == "🎯 今日選股":
         "📋 全部（表格）",
     ])
 
+    def _render_grid(df_):
+        """2 欄網格渲染卡片：1 2 / 3 4 / 5 6..."""
+        rows = df_.reset_index(drop=True)
+        n = len(rows)
+        for i in range(0, n, 2):
+            col_l, col_r = st.columns(2, gap="small")
+            with col_l:
+                render_card(rows.iloc[i], i + 1)
+            if i + 1 < n:
+                with col_r:
+                    render_card(rows.iloc[i + 1], i + 2)
+
     with tab_long:
         if long_df.empty:
             st.warning("無符合條件的做多標的")
         else:
-            for idx, row in long_df.iterrows():
-                render_card(row, idx + 1)
+            _render_grid(long_df)
 
     with tab_short:
         if short_df.empty:
             st.warning("無符合條件的做空標的")
         else:
-            for idx, row in short_df.iterrows():
-                render_card(row, idx + 1)
+            _render_grid(short_df)
 
     with tab_all:
         if result["full"].empty:
@@ -1020,13 +1032,45 @@ else:
             candle_history=candle_hist,
             econ=diag.econ,
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True,
+                        config={
+                            "scrollZoom": True,
+                            "displaylogo": False,
+                            "modeBarButtonsToRemove": ["lasso2d", "select2d"],
+                            "doubleClick": "reset",
+                        })
+        st.caption(
+            "🖱️ **操作提示**：上方按鈕 1M/3M/6M/1Y/全部 切換時距　·　"
+            "滑鼠拖曳平移　·　滾輪縮放　·　雙擊復原　·　"
+            "十字線即時顯示當日價格"
+        )
         st.caption(
             "📖 **圖例**：🟥 紅實線=壓力　·　🟩 綠實線=支撐　·　"
             "🟪 紫虛線=費波納契　·　綠/紅虛線=上升/下降切線　·　"
-            "▲▼(編號)=波浪 · 名稱浮標=K 線型態　·　"
-            "左上角=Hurst/波動率　·　下方子圖=成交量 / MACD / KD"
+            "▲▼(編號)=波浪 · 三角形浮標=K 線型態（**滑鼠移過可看含意**）"
         )
+
+        # ---- 型態解說清單 ----
+        if candle_hist:
+            with st.expander(f"📋 近期 K 線型態清單（{len(candle_hist)} 個發生點）·"
+                             f"點此展開看完整說明", expanded=True):
+                rows_list = []
+                for cand_idx, candles in reversed(candle_hist[-20:]):
+                    if cand_idx >= len(df):
+                        continue
+                    dt = df.index[cand_idx]
+                    for c in candles:
+                        ic = {"bull": "🔴 偏多", "bear": "🟢 偏空",
+                              "neutral": "⚪ 中性"}[c.signal]
+                        rows_list.append({
+                            "日期": str(dt.date()),
+                            "型態": c.name,
+                            "訊號": ic,
+                            "含意": c.note,
+                        })
+                if rows_list:
+                    st.dataframe(pd.DataFrame(rows_list),
+                                 use_container_width=True, hide_index=True)
 
     # ---- 📊 趨勢結構（均線 + 波段 + 波浪 + 週線） ----
     with tab_trend:
