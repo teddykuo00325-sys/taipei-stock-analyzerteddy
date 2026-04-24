@@ -12,7 +12,8 @@ from analyzer import (chart, data, diagnosis, etf, etf_scraper,
 
 logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 
-st.set_page_config(page_title="台北股市分析器", page_icon="📈", layout="wide")
+st.set_page_config(page_title="中央印製廠 · 台北股市分析器 · 一起掙大錢",
+                   page_icon="📈", layout="wide")
 
 # === 側邊欄寬度 + 手機版響應式 ===
 st.markdown("""
@@ -262,7 +263,14 @@ def render_card(row: pd.Series, rank: int):
 # ============================================================
 # Sidebar
 # ============================================================
-st.sidebar.title("📈 台北股市分析器")
+st.sidebar.markdown(
+    "<div style='font-size:18px; font-weight:700; line-height:1.3;'>"
+    "🏛️ 中央印製廠<br>"
+    "📈 台北股市分析器<br>"
+    "<span style='color:#ffd700;'>💰 一起掙大錢</span>"
+    "</div>",
+    unsafe_allow_html=True,
+)
 
 if "app_mode" not in st.session_state:
     st.session_state.app_mode = "🎯 今日選股"
@@ -360,7 +368,7 @@ if mode == "🎯 今日選股":
 
     render_market_sidebar()
 
-    st.title("📈 台北股市分析器")
+    st.title("🏛️ 中央印製廠 · 📈 台北股市分析器 · 💰 一起掙大錢")
     st.caption(f"🎯 今日選股　·　全體上市　·　20 日均量 > {min_vol} 張　·　做多/做空各前 {top_n} 檔")
 
     # --- Session state 保留結果 ---
@@ -509,7 +517,7 @@ if mode == "🎯 今日選股":
 # 📈 多股比較
 # ============================================================
 elif mode == "📈 多股比較":
-    st.title("📈 台北股市分析器")
+    st.title("🏛️ 中央印製廠 · 📈 台北股市分析器 · 💰 一起掙大錢")
     st.caption("📈 多股比較　·　疊加 2~5 檔標的相對走勢與相關性分析")
 
     st.sidebar.subheader("選取標的")
@@ -570,8 +578,8 @@ elif mode == "📈 多股比較":
     for i, (c, d) in enumerate(aligned.items()):
         if d.empty or len(d) < 2:
             continue
-        base = d["Close"].iloc[0]
-        rel = (d["Close"] / base - 1) * 100
+        base = d["close"].iloc[0]
+        rel = (d["close"] / base - 1) * 100
         color = palette[i % len(palette)]
         fig_cmp.add_trace(_go2.Scatter(
             x=d.index, y=rel, name=f"{c} {names_cmp.get(c, '')}",
@@ -580,10 +588,10 @@ elif mode == "📈 多股比較":
                            "%{x|%Y-%m-%d}<br>"
                            "相對漲幅 %{y:.2f}%<extra></extra>"),
         ))
-        ret_total = (d["Close"].iloc[-1] / base - 1) * 100
-        max_up = (d["Close"].max() / base - 1) * 100
-        max_dn = (d["Close"].min() / base - 1) * 100
-        daily_ret = d["Close"].pct_change().dropna()
+        ret_total = (d["close"].iloc[-1] / base - 1) * 100
+        max_up = (d["close"].max() / base - 1) * 100
+        max_dn = (d["close"].min() / base - 1) * 100
+        daily_ret = d["close"].pct_change().dropna()
         vol_ann = daily_ret.std() * (252 ** 0.5) * 100
         perf_rows.append({
             "代號": c,
@@ -592,7 +600,7 @@ elif mode == "📈 多股比較":
             "最大漲幅 %": round(max_up, 2),
             "最大回檔 %": round(max_dn, 2),
             "年化波動率 %": round(vol_ann, 1),
-            "最新收盤": round(float(d["Close"].iloc[-1]), 2),
+            "最新收盤": round(float(d["close"].iloc[-1]), 2),
         })
 
     fig_cmp.add_hline(y=0, line_dash="dot", line_color="#888", line_width=1)
@@ -645,7 +653,7 @@ elif mode == "📈 多股比較":
     # 相關性矩陣
     if len(aligned) >= 2:
         st.markdown("#### 🔗 日報酬相關性")
-        daily = pd.DataFrame({c: d["Close"].pct_change()
+        daily = pd.DataFrame({c: d["close"].pct_change()
                               for c, d in aligned.items()}).dropna()
         if not daily.empty:
             corr = daily.corr()
@@ -671,7 +679,7 @@ elif mode == "📈 多股比較":
 # ⭐ 收藏清單
 # ============================================================
 elif mode == "⭐ 收藏清單":
-    st.title("📈 台北股市分析器")
+    st.title("🏛️ 中央印製廠 · 📈 台北股市分析器 · 💰 一起掙大錢")
     st.caption("⭐ 收藏清單　·　追蹤常看股票、即時進場區警示")
 
     codes = watchlist.get()
@@ -866,7 +874,7 @@ elif mode == "⭐ 收藏清單":
 # 🔥 資金流向 — 產業族群強弱排行
 # ============================================================
 elif mode == "🔥 資金流向":
-    st.title("📈 台北股市分析器")
+    st.title("🏛️ 中央印製廠 · 📈 台北股市分析器 · 💰 一起掙大錢")
     st.caption("🔥 資金流向　·　依產業別匯總漲跌與成交值，追蹤族群輪動")
 
     # === 資料源切換 ===
@@ -1028,7 +1036,7 @@ elif mode == "🔥 資金流向":
 elif mode == "📊 主動式ETF":
     render_market_sidebar()
 
-    st.title("📈 台北股市分析器")
+    st.title("🏛️ 中央印製廠 · 📈 台北股市分析器 · 💰 一起掙大錢")
     st.caption("📊 主動式 ETF 持股追蹤 — 依資產規模 (AUM) 自動選出前 5 大（台股專注）")
 
     # === 持久化：首次載入自 GitHub 拉 DB ===
@@ -1309,7 +1317,7 @@ else:
 
     render_market_sidebar()
 
-    st.title("📈 台北股市分析器")
+    st.title("🏛️ 中央印製廠 · 📈 台北股市分析器 · 💰 一起掙大錢")
     st.caption("🔎 個股查詢")
 
     # 從今日選股跳轉時自動觸發
