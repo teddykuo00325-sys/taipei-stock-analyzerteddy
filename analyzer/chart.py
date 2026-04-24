@@ -11,7 +11,8 @@ def build(df: pd.DataFrame, title: str = "", patterns=None,
           candle_history=None, econ=None,
           entry_zone=None, target_price=None,
           short_stop=None, mid_stop=None,
-          display_days: int = 130) -> go.Figure:
+          display_days: int = 130,
+          show_trend_lines: bool = True) -> go.Figure:
     """建構多面板技術圖表.
 
     參數：
@@ -28,10 +29,11 @@ def build(df: pd.DataFrame, title: str = "", patterns=None,
     """
     patterns = patterns or []
     candle_history = candle_history or []
+    # K 線佔 65%，空出更多縱向空間
     fig = make_subplots(
         rows=4, cols=1, shared_xaxes=True,
-        row_heights=[0.52, 0.15, 0.17, 0.16], vertical_spacing=0.02,
-        subplot_titles=("K 線 + 四均線 + 支撐壓力 + 費波納契", "成交量", "MACD", "KD"),
+        row_heights=[0.66, 0.12, 0.11, 0.11], vertical_spacing=0.015,
+        subplot_titles=("K 線圖", "成交量", "MACD", "KD"),
     )
 
     # --- K 線 (台股紅漲綠跌) ---
@@ -104,7 +106,7 @@ def build(df: pd.DataFrame, title: str = "", patterns=None,
                     row=1, col=1,
                 )
 
-    # 波浪轉折點標記（含編號 1~5 或 H/L）
+    # 波浪轉折點標記（簡化：只標最近 4 個，較小字型）
     abs_pivots: list[tuple[int, str, float]] = []
     if wave_pivots:
         lookback = 120 if len(df) >= 120 else len(df)
@@ -114,32 +116,30 @@ def build(df: pd.DataFrame, title: str = "", patterns=None,
             if 0 <= actual_idx < len(df):
                 abs_pivots.append((actual_idx, typ, price))
 
-    # 近 6 個轉折加上編號標籤（5-4-3-2-1 倒序代表波浪次序）
     if abs_pivots:
-        recent = abs_pivots[-6:]
-        wave_nums = list(range(len(recent), 0, -1))  # 6,5,4,3,2,1
+        recent = abs_pivots[-4:]
+        wave_nums = list(range(len(recent), 0, -1))
         for (actual_idx, typ, price), num in zip(recent, wave_nums):
             date = df.index[actual_idx]
             marker_color = "#d62728" if typ == "H" else "#2ca02c"
-            label = f"{typ}{num}"
             fig.add_trace(
                 go.Scatter(
                     x=[date], y=[price], mode="markers+text",
-                    marker=dict(size=11, color=marker_color,
+                    marker=dict(size=9, color=marker_color,
                                 symbol="triangle-down" if typ == "H"
                                 else "triangle-up",
-                                line=dict(color="white", width=1)),
-                    text=[label],
+                                line=dict(color="white", width=0.8)),
+                    text=[f"{typ}{num}"],
                     textposition="top center" if typ == "H" else "bottom center",
-                    textfont=dict(size=10, color=marker_color,
-                                  family="sans-serif"),
+                    textfont=dict(size=8, color=marker_color),
                     showlegend=False, hoverinfo="skip",
+                    name="波浪",
                 ),
                 row=1, col=1,
             )
 
     # --- 自動繪製近期上升/下降切線 ---
-    if abs_pivots and len(abs_pivots) >= 3:
+    if show_trend_lines and abs_pivots and len(abs_pivots) >= 3:
         lows = [(i, p) for i, t, p in abs_pivots if t == "L"]
         highs = [(i, p) for i, t, p in abs_pivots if t == "H"]
         # 上升切線：最近兩個低點且第二個 > 第一個
@@ -182,13 +182,13 @@ def build(df: pd.DataFrame, title: str = "", patterns=None,
                     row=1, col=1,
                 )
 
-    # --- K 線型態歷史標記（近 60 日發生者）— hover 顯示完整解說 ---
+    # --- K 線型態標記（icon only，hover 解說）---
     if candle_history:
         seen_name = set()
-        bull_x, bull_y, bull_text, bull_hover = [], [], [], []
-        bear_x, bear_y, bear_text, bear_hover = [], [], [], []
-        neutral_x, neutral_y, neutral_text, neutral_hover = [], [], [], []
-        for (cand_idx, candles) in candle_history[-15:]:
+        bull_x, bull_y, bull_hover = [], [], []
+        bear_x, bear_y, bear_hover = [], [], []
+        neutral_x, neutral_y, neutral_hover = [], [], []
+        for (cand_idx, candles) in candle_history[-12:]:
             if cand_idx >= len(df):
                 continue
             date = df.index[cand_idx]
@@ -199,61 +199,43 @@ def build(df: pd.DataFrame, title: str = "", patterns=None,
                 seen_name.add(key)
                 is_bull = c.signal == "bull"
                 is_bear = c.signal == "bear"
+                tmpl = (f"<b>{c.name}</b><br>"
+                        f"日期：{date.date()}<br>"
+                        f"含意：{c.note}<br>訊號：")
                 if is_bull:
-                    y = df["low"].iloc[cand_idx] * 0.98
+                    y = df["low"].iloc[cand_idx] * 0.985
                     bull_x.append(date); bull_y.append(y)
-                    bull_text.append(c.name)
-                    bull_hover.append(
-                        f"<b>{c.name}</b><br>"
-                        f"日期：{date.date()}<br>"
-                        f"含意：{c.note}<br>"
-                        f"訊號：🔴 偏多")
+                    bull_hover.append(tmpl + "🔴 偏多")
                 elif is_bear:
-                    y = df["high"].iloc[cand_idx] * 1.02
+                    y = df["high"].iloc[cand_idx] * 1.015
                     bear_x.append(date); bear_y.append(y)
-                    bear_text.append(c.name)
-                    bear_hover.append(
-                        f"<b>{c.name}</b><br>"
-                        f"日期：{date.date()}<br>"
-                        f"含意：{c.note}<br>"
-                        f"訊號：🟢 偏空")
+                    bear_hover.append(tmpl + "🟢 偏空")
                 else:
-                    y = df["high"].iloc[cand_idx] * 1.02
+                    y = df["high"].iloc[cand_idx] * 1.015
                     neutral_x.append(date); neutral_y.append(y)
-                    neutral_text.append(c.name)
-                    neutral_hover.append(
-                        f"<b>{c.name}</b><br>"
-                        f"日期：{date.date()}<br>"
-                        f"含意：{c.note}<br>"
-                        f"訊號：⚪ 中性")
+                    neutral_hover.append(tmpl + "⚪ 中性")
 
         if bull_x:
             fig.add_trace(go.Scatter(
-                x=bull_x, y=bull_y, mode="markers+text",
-                marker=dict(symbol="triangle-up", size=13, color="#d62728",
-                            line=dict(color="white", width=1)),
-                text=bull_text, textposition="bottom center",
-                textfont=dict(size=9, color="#d62728"),
+                x=bull_x, y=bull_y, mode="markers",
+                marker=dict(symbol="triangle-up", size=10, color="#d62728",
+                            line=dict(color="white", width=0.8)),
                 hovertext=bull_hover, hoverinfo="text",
                 name="多頭型態", showlegend=True,
             ), row=1, col=1)
         if bear_x:
             fig.add_trace(go.Scatter(
-                x=bear_x, y=bear_y, mode="markers+text",
-                marker=dict(symbol="triangle-down", size=13, color="#2ca02c",
-                            line=dict(color="white", width=1)),
-                text=bear_text, textposition="top center",
-                textfont=dict(size=9, color="#2ca02c"),
+                x=bear_x, y=bear_y, mode="markers",
+                marker=dict(symbol="triangle-down", size=10, color="#2ca02c",
+                            line=dict(color="white", width=0.8)),
                 hovertext=bear_hover, hoverinfo="text",
                 name="空頭型態", showlegend=True,
             ), row=1, col=1)
         if neutral_x:
             fig.add_trace(go.Scatter(
-                x=neutral_x, y=neutral_y, mode="markers+text",
-                marker=dict(symbol="diamond", size=10, color="#aaa",
-                            line=dict(color="white", width=1)),
-                text=neutral_text, textposition="top center",
-                textfont=dict(size=9, color="#aaa"),
+                x=neutral_x, y=neutral_y, mode="markers",
+                marker=dict(symbol="diamond", size=8, color="#aaa",
+                            line=dict(color="white", width=0.8)),
                 hovertext=neutral_hover, hoverinfo="text",
                 name="中性型態", showlegend=True,
             ), row=1, col=1)
@@ -275,7 +257,7 @@ def build(df: pd.DataFrame, title: str = "", patterns=None,
             y=target_price, line_dash="solid",
             line_color="rgba(255,165,0,0.85)", line_width=2,
             annotation_text=f"🎯 目標 {target_price:.2f}",
-            annotation_position="top right",
+            annotation_position="top left",   # 左側避免與壓力衝突
             annotation_font_color="#ffa500",
             annotation_font_size=11,
             row=1, col=1,
@@ -285,7 +267,7 @@ def build(df: pd.DataFrame, title: str = "", patterns=None,
             y=short_stop, line_dash="longdashdot",
             line_color="rgba(44,160,44,0.9)", line_width=2,
             annotation_text=f"🛑 短線停損 {short_stop:.2f}",
-            annotation_position="bottom right",
+            annotation_position="bottom left",
             annotation_font_color="#2ca02c",
             annotation_font_size=11,
             row=1, col=1,
@@ -295,7 +277,7 @@ def build(df: pd.DataFrame, title: str = "", patterns=None,
             y=mid_stop, line_dash="dot",
             line_color="rgba(44,160,44,0.55)", line_width=1.5,
             annotation_text=f"中線停損 {mid_stop:.2f}",
-            annotation_position="bottom right",
+            annotation_position="bottom left",
             annotation_font_color="#2ca02c",
             annotation_font_size=10,
             row=1, col=1,
@@ -348,11 +330,11 @@ def build(df: pd.DataFrame, title: str = "", patterns=None,
         start_dt = end_dt = None
 
     fig.update_layout(
-        title=title, height=840, xaxis_rangeslider_visible=False,
+        title=title, height=960, xaxis_rangeslider_visible=False,
         margin=dict(l=10, r=10, t=80, b=10),
         legend=dict(orientation="h", y=1.05, x=0, font=dict(size=10)),
         hovermode="x unified",
-        dragmode="pan",      # 預設拖曳模式（不需 shift 即可平移）
+        dragmode="pan",
         hoverlabel=dict(bgcolor="rgba(20,24,35,0.9)", font_size=12),
     )
     # 時間軸 range selector（在所有 subplot 共用）

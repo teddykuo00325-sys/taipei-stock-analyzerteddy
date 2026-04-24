@@ -1374,14 +1374,50 @@ else:
     if "stock_code" not in st.session_state:
         st.session_state.stock_code = "2330"
 
-    # --- B. 自動補齊：以產業表建立下拉 options ---
+    # --- B. 自動補齊：以產業表建立下拉 options + 常見 ETF ---
+    ETF_CATALOG = [
+        ("0050", "元大台灣50", "大盤 ETF"),
+        ("0052", "富邦科技", "科技 ETF"),
+        ("0056", "元大高股息", "高股息 ETF"),
+        ("006203", "元大MSCI台灣", "大盤 ETF"),
+        ("006208", "富邦台50", "大盤 ETF"),
+        ("00679B", "元大美債20年", "債券 ETF"),
+        ("00692", "富邦公司治理", "ESG ETF"),
+        ("00713", "元大台灣高息低波", "高股息 ETF"),
+        ("00878", "國泰永續高股息", "ESG ETF"),
+        ("00881", "國泰台灣5G+", "5G ETF"),
+        ("00891", "中信關鍵半導體", "半導體 ETF"),
+        ("00892", "富邦台灣半導體", "半導體 ETF"),
+        ("00893", "國泰智能電動車", "電動車 ETF"),
+        ("00895", "富邦未來車", "電動車 ETF"),
+        ("00896", "中信綠能及電動車", "綠能 ETF"),
+        ("00900", "富邦特選高股息", "高股息 ETF"),
+        ("00929", "復華台灣科技優息", "科技高息 ETF"),
+        ("00935", "野村臺灣新科技50", "科技 ETF"),
+        ("00939", "統一台灣高息動能", "高股息 ETF"),
+        ("00940", "元大台灣價值高息", "高股息 ETF"),
+        ("00941", "中信上游半導體", "半導體 ETF"),
+        ("00981A", "主動統一台股增長", "主動式 ETF"),
+        ("00982A", "主動群益台灣強棒", "主動式 ETF"),
+        ("00991A", "主動復華未來50", "主動式 ETF"),
+        ("00992A", "主動群益科技創新", "主動式 ETF"),
+        ("00993A", "主動安聯台灣", "主動式 ETF"),
+    ]
+
     @st.cache_data(ttl=86400, show_spinner=False)
     def _stock_options() -> list[str]:
+        opts: list[str] = []
+        # ETF 放最上面
+        for code, name, cat in ETF_CATALOG:
+            opts.append(f"{code} {name} · {cat}")
+        # 再接個股
         df = industry.snapshot()
-        if df.empty:
-            return ["2330 台積電"]
-        return (df["code"] + " " + df["short_name"]
-                + " · " + df["industry"]).tolist()
+        if not df.empty:
+            opts += (df["code"] + " " + df["short_name"]
+                     + " · " + df["industry"]).tolist()
+        if not opts:
+            opts = ["2330 台積電"]
+        return opts
 
     opts = _stock_options()
     # 找到預設選項索引
@@ -1432,6 +1468,15 @@ else:
         "🔴 盤中即時更新", value=False,
         help="啟用後會抓取 TWSE MIS 即時報價覆蓋今日 K 線；僅在日線模式有效",
     )
+
+    # --- K 線圖輔助線顯示控制 ---
+    with st.sidebar.expander("🎨 圖表 overlay 開關", expanded=False):
+        show_patterns = st.checkbox("K 線型態標記", value=True)
+        show_waves = st.checkbox("波浪轉折 (H/L)", value=True)
+        show_fib = st.checkbox("費波納契級位", value=True)
+        show_trend_lines = st.checkbox("上升/下降切線", value=True)
+        show_plan = st.checkbox("進場區/目標/停損", value=True)
+        show_sr = st.checkbox("支撐/壓力", value=True)
 
     go_btn = st.sidebar.button("🔍 開始分析", use_container_width=True, type="primary")
 
@@ -1739,19 +1784,22 @@ else:
                 "#ffa500"))
         st.markdown("".join(pills), unsafe_allow_html=True)
         st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
-        trend_info = {"support": diag.support, "resistance": diag.resistance}
+        trend_info = {"support": diag.support,
+                      "resistance": diag.resistance} if show_sr else None
         fig = chart.build(
             df, title=f"{name} ({code}) · {interval_label}",
-            patterns=diag.chart_patterns,
-            fib=diag.fib, wave_pivots=w_detail.pivots,
+            patterns=diag.chart_patterns if show_patterns else [],
+            fib=diag.fib if show_fib else None,
+            wave_pivots=w_detail.pivots if show_waves else None,
             trend=trend_info,
-            candle_history=candle_hist,
+            candle_history=candle_hist if show_patterns else [],
             econ=diag.econ,
-            entry_zone=diag.entry_zone,
-            target_price=diag.target_price,
-            short_stop=diag.short_stop,
-            mid_stop=diag.mid_stop,
+            entry_zone=diag.entry_zone if show_plan else None,
+            target_price=diag.target_price if show_plan else None,
+            short_stop=diag.short_stop if show_plan else None,
+            mid_stop=diag.mid_stop if show_plan else None,
             display_days=display_days_map.get(period_label, 130),
+            show_trend_lines=show_trend_lines,
         )
         st.plotly_chart(fig, use_container_width=True,
                         config={

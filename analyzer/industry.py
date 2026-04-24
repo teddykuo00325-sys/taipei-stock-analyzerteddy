@@ -75,20 +75,27 @@ def snapshot(max_age_sec: int = 86400) -> pd.DataFrame:
 
 def info_for(code: str) -> dict | None:
     df = snapshot()
-    if df.empty:
-        return None
-    row = df[df["code"] == str(code).strip()]
-    if row.empty:
-        return None
-    r = row.iloc[0]
-    return {
-        "code": r["code"],
-        "short_name": r["short_name"],
-        "full_name": r["full_name"],
-        "ind_code": r["ind_code"],
-        "industry": r["industry"],
-        "name_en": r["name_en"],
-    }
+    c = str(code).strip()
+    if not df.empty:
+        row = df[df["code"] == c]
+        if not row.empty:
+            r = row.iloc[0]
+            return {
+                "code": r["code"],
+                "short_name": r["short_name"],
+                "full_name": r["full_name"],
+                "ind_code": r["ind_code"],
+                "industry": r["industry"],
+                "name_en": r["name_en"],
+            }
+    # ETF / 未列入上市公司基本資料 fallback
+    if c[:2] in ("00",) or (c.endswith("A") and c.startswith("0")):
+        return {
+            "code": c, "short_name": c, "full_name": c,
+            "ind_code": "91", "industry": "ETF / 受益憑證",
+            "name_en": "",
+        }
+    return None
 
 
 def industry_of(code: str) -> str:
