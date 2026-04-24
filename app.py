@@ -156,8 +156,9 @@ def render_card(row: pd.Series, rank: int):
             st.write("")  # 對齊 metric 高度
             if st.button("🔎 完整分析", key=f"detail_{rank}_{row['代號']}",
                          use_container_width=True, type="primary"):
+                # 透過 _mode_override 延遲到下一輪 rerun 前套用
+                st.session_state._mode_override = "🔎 個股查詢"
                 st.session_state.stock_code = str(row["代號"])
-                st.session_state.app_mode = "🔎 個股查詢"
                 st.session_state.auto_analyze = True
                 st.rerun()
 
@@ -191,6 +192,9 @@ st.sidebar.title("📈 台北股市分析器")
 
 if "app_mode" not in st.session_state:
     st.session_state.app_mode = "🎯 今日選股"
+# 處理上一輪 rerun 設定的模式切換意圖（必須在 widget 渲染前）
+if "_mode_override" in st.session_state:
+    st.session_state.app_mode = st.session_state.pop("_mode_override")
 
 mode = st.sidebar.radio(
     "模式",
