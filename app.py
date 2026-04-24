@@ -518,33 +518,74 @@ if mode == "🎯 今日選股":
 # ============================================================
 elif mode == "📈 多股比較":
     st.title("Teddy中央印製廠_台北股市分析器 - 掙大錢 !")
-    st.caption("📈 多股比較　·　疊加 2~5 檔標的相對走勢與相關性分析")
+    st.caption("📈 多股比較　·　疊加 2~5 檔標的相對走勢 + 排行 + 相關性")
 
-    st.sidebar.subheader("選取標的")
     ind_df_cmp = industry.snapshot()
     if ind_df_cmp.empty:
         opts_cmp = ["2330 台積電"]
     else:
         opts_cmp = (ind_df_cmp["code"] + " "
                     + ind_df_cmp["short_name"]).tolist()
+    code_to_label = {o.split()[0]: o for o in opts_cmp}
+
+    # ============================================================
+    # 側邊欄：快速組合 + 自訂
+    # ============================================================
+    PRESETS = {
+        "⭐ 我的收藏": watchlist.get(),
+        "🔥 半導體三雄": ["2330", "2303", "2454"],
+        "💻 電子五哥": ["2317", "2324", "2382", "2356", "2353"],
+        "🚀 AI 概念": ["2330", "2454", "6446", "3231", "4938"],
+        "📊 大盤 ETF": ["0050", "0056", "006208"],
+        "🏦 金控四雄": ["2882", "2891", "2881", "2886"],
+        "📊 主動式ETF Top 5": ["00981A", "00982A", "00991A",
+                                "00992A", "00993A"],
+    }
+
+    st.sidebar.subheader("⚡ 快速組合")
+    preset_col1, preset_col2 = st.sidebar.columns(2)
+    preset_keys = list(PRESETS.keys())
+    for i, k in enumerate(preset_keys):
+        target_col = preset_col1 if i % 2 == 0 else preset_col2
+        with target_col:
+            if st.button(k, key=f"preset_{i}", use_container_width=True):
+                st.session_state.cmp_picks = [
+                    code_to_label.get(c, f"{c} -")
+                    for c in PRESETS[k][:5]
+                ]
+                st.rerun()
+
+    st.sidebar.subheader("🔍 自訂標的")
     default_picks = st.session_state.get("cmp_picks", ["2330 台積電"])
     picked = st.sidebar.multiselect(
-        "股票（輸入關鍵字過濾，最多 5 檔）",
+        "股票（最多 5 檔）",
         opts_cmp,
         default=[p for p in default_picks if p in opts_cmp],
         max_selections=5,
+        label_visibility="collapsed",
     )
     st.session_state.cmp_picks = picked
+
+    st.sidebar.subheader("📅 期間與顯示")
     period_cmp = st.sidebar.selectbox(
-        "觀察期間", ["1 個月", "3 個月", "6 個月", "1 年", "2 年"],
-        index=2,
+        "觀察期間",
+        ["5 日", "1 個月", "3 個月", "6 個月", "1 年", "2 年"],
+        index=3,
     )
-    p_map = {"1 個月": "1mo", "3 個月": "3mo", "6 個月": "6mo",
-             "1 年": "1y", "2 年": "2y"}
+    p_map = {"5 日": "1mo", "1 個月": "1mo", "3 個月": "3mo",
+             "6 個月": "6mo", "1 年": "1y", "2 年": "2y"}
+    days_map = {"5 日": 5, "1 個月": 22, "3 個月": 66,
+                "6 個月": 130, "1 年": 252, "2 年": 504}
+
+    display_mode = st.sidebar.radio(
+        "顯示模式",
+        ["📈 相對漲幅 (%)", "💵 標準化價格", "📉 絕對價格"],
+        index=0,
+    )
     render_market_sidebar()
 
     if not picked:
-        st.info("👈 於左側選取 2~5 檔股票開始比較")
+        st.info("👈 點左側「快速組合」或自訂選取股票開始比較")
         st.stop()
 
     codes_cmp = [p.split()[0] for p in picked]
@@ -570,46 +611,124 @@ elif mode == "📈 多股比較":
             else common_index.intersection(d.index)
     aligned = {c: d.loc[common_index] for c, d in raws.items()}
 
-    # 計算相對漲幅（以起始日為 0%）
+    # 截取期間指定的天數
+    look = days_map.get(period_cmp, 130)
+    aligned = {c: d.tail(look) for c, d in aligned.items()}
+    if not aligned or not any(len(d) >= 2 for d in aligned.values()):
+        st.error("資料不足以比較")
+        st.stop()
+
     import plotly.graph_objects as _go2
-    fig_cmp = _go2.Figure()
     palette = ["#d62728", "#ff7f0e", "#1f77b4", "#9467bd", "#2ca02c"]
+
+    # ==========================================================
+    # 📊 領先/落後排行（主圖上方）
+    # ==========================================================
+    rank_rows = []
+    for i, (c, d) in enumerate(aligned.items()):
+        if d.empty or len(d) < 2:
+            continue
+        base = float(d["close"].iloc[0])
+        last_p = float(d["close"].iloc[-1])
+        ret_total = (last_p / base - 1) * 100
+        rank_rows.append({
+            "code": c,
+            "label": f"{c} {names_cmp.get(c, '')}",
+            "return": ret_total,
+            "price": last_p,
+            "base": base,
+        })
+    rank_rows.sort(key=lambda x: x["return"], reverse=True)
+
+    st.markdown("#### 🏆 期間報酬排行")
+    rank_fig = _go2.Figure(_go2.Bar(
+        x=[r["return"] for r in rank_rows],
+        y=[r["label"] for r in rank_rows],
+        orientation="h",
+        marker_color=["#d62728" if r["return"] >= 0 else "#2ca02c"
+                      for r in rank_rows],
+        text=[f"{r['return']:+.2f}%  ({r['price']:.2f})"
+              for r in rank_rows],
+        textposition="outside",
+    ))
+    rank_fig.update_layout(
+        height=max(180, 48 * len(rank_rows) + 60),
+        margin=dict(l=10, r=10, t=20, b=10),
+        yaxis=dict(autorange="reversed"),
+        xaxis_title=f"{period_cmp}報酬 %",
+        showlegend=False,
+    )
+    st.plotly_chart(rank_fig, use_container_width=True,
+                    config={"displayModeBar": False})
+
+    # ==========================================================
+    # 📈 主走勢圖
+    # ==========================================================
+    fig_cmp = _go2.Figure()
     perf_rows = []
     for i, (c, d) in enumerate(aligned.items()):
         if d.empty or len(d) < 2:
             continue
-        base = d["close"].iloc[0]
-        rel = (d["close"] / base - 1) * 100
+        base = float(d["close"].iloc[0])
         color = palette[i % len(palette)]
+        name_full = f"{c} {names_cmp.get(c, '')}"
+
+        if display_mode.startswith("📈"):  # 相對漲幅
+            y = (d["close"] / base - 1) * 100
+            y_title = "相對漲幅 (%)"
+            hover = (f"<b>{name_full}</b><br>%{{x|%Y-%m-%d}}<br>"
+                     "漲幅 %{y:.2f}%<br>"
+                     "價 %{customdata:.2f}<extra></extra>")
+        elif display_mode.startswith("💵"):  # 標準化價格
+            y = d["close"] / base * 100
+            y_title = "標準化價格 (起始=100)"
+            hover = (f"<b>{name_full}</b><br>%{{x|%Y-%m-%d}}<br>"
+                     "標準化 %{y:.2f}<br>"
+                     "實際價 %{customdata:.2f}<extra></extra>")
+        else:  # 絕對價格
+            y = d["close"]
+            y_title = "價格"
+            hover = (f"<b>{name_full}</b><br>%{{x|%Y-%m-%d}}<br>"
+                     "價格 %{y:.2f}<extra></extra>")
+
         fig_cmp.add_trace(_go2.Scatter(
-            x=d.index, y=rel, name=f"{c} {names_cmp.get(c, '')}",
+            x=d.index, y=y, name=name_full,
             line=dict(color=color, width=2),
-            hovertemplate=(f"<b>{c} {names_cmp.get(c, '')}</b><br>"
-                           "%{x|%Y-%m-%d}<br>"
-                           "相對漲幅 %{y:.2f}%<extra></extra>"),
+            customdata=d["close"],
+            hovertemplate=hover,
         ))
-        ret_total = (d["close"].iloc[-1] / base - 1) * 100
-        max_up = (d["close"].max() / base - 1) * 100
-        max_dn = (d["close"].min() / base - 1) * 100
+
+        last_p = float(d["close"].iloc[-1])
+        ret_total = (last_p / base - 1) * 100
+        max_up = (float(d["close"].max()) / base - 1) * 100
+        max_dn = (float(d["close"].min()) / base - 1) * 100
         daily_ret = d["close"].pct_change().dropna()
-        vol_ann = daily_ret.std() * (252 ** 0.5) * 100
+        vol_ann = (float(daily_ret.std()) * (252 ** 0.5) * 100
+                   if not daily_ret.empty else 0.0)
         perf_rows.append({
-            "代號": c,
-            "名稱": names_cmp.get(c, ""),
+            "代號": c, "名稱": names_cmp.get(c, ""),
             "期間報酬 %": round(ret_total, 2),
             "最大漲幅 %": round(max_up, 2),
             "最大回檔 %": round(max_dn, 2),
             "年化波動率 %": round(vol_ann, 1),
-            "最新收盤": round(float(d["close"].iloc[-1]), 2),
+            "最新收盤": round(last_p, 2),
         })
 
-    fig_cmp.add_hline(y=0, line_dash="dot", line_color="#888", line_width=1)
+    if display_mode.startswith("📈"):
+        fig_cmp.add_hline(y=0, line_dash="dot", line_color="#888",
+                          line_width=1)
+    elif display_mode.startswith("💵"):
+        fig_cmp.add_hline(y=100, line_dash="dot", line_color="#888",
+                          line_width=1,
+                          annotation_text="起始",
+                          annotation_position="right")
+
     fig_cmp.update_layout(
-        title=f"相對漲幅 · {period_cmp}起",
-        height=520,
-        margin=dict(l=10, r=10, t=50, b=10),
+        title=f"{display_mode.split()[1]}　·　{period_cmp}",
+        height=560,
+        margin=dict(l=10, r=10, t=60, b=10),
         hovermode="x unified",
-        xaxis_title="", yaxis_title="相對漲幅 (%)",
+        xaxis_title="", yaxis_title=y_title,
         legend=dict(orientation="h", y=1.08, x=0),
         dragmode="pan",
     )
@@ -626,8 +745,9 @@ elif mode == "📈 多股比較":
                     config={"scrollZoom": True, "displaylogo": False})
 
     # 績效表
-    st.markdown("#### 📊 績效比較")
-    perf_df = pd.DataFrame(perf_rows)
+    st.markdown("#### 📊 績效比較表")
+    perf_df = pd.DataFrame(perf_rows).sort_values("期間報酬 %",
+                                                  ascending=False).reset_index(drop=True)
 
     def _perf_color(v):
         try:
