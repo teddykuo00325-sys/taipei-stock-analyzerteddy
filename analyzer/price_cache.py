@@ -370,3 +370,36 @@ def stats() -> dict:
         "date_range": (min_max[0], min_max[1]) if min_max else (None, None),
         "db_size_kb": round(size_kb, 1),
     }
+
+
+# ---------------------------------------------------------------
+# GitHub 備份 (選配：需設定 secrets)
+# ---------------------------------------------------------------
+REPO_PATH = "data/ohlcv.db"
+
+
+def auto_restore() -> tuple[bool, str]:
+    """若本機 DB 為空，從 GitHub 下載備份."""
+    from . import storage
+    if not storage.is_configured():
+        return False, "未設定 GitHub secrets"
+    s = stats()
+    if s["rows"] > 0:
+        return False, f"本機已有 {s['rows']} 列"
+    return storage.download_db(DB_PATH, repo_path=REPO_PATH)
+
+
+def backup_now(message: str | None = None) -> tuple[bool, str]:
+    """手動備份到 GitHub."""
+    from . import storage
+    if not storage.is_configured():
+        return False, "未設定 GitHub secrets"
+    s = stats()
+    msg = message or f"auto: ohlcv.db ({s['rows']} rows, {s['codes']} codes)"
+    return storage.upload_db(DB_PATH, message=msg, repo_path=REPO_PATH)
+
+
+def auto_backup_if_changed(min_stocks: int = 10) -> tuple[bool, str]:
+    """若最近 bulk_prepare 有新增 >= min_stocks 檔，自動備份."""
+    # 由 screener 呼叫端決定是否達閾值，此處只是統一介面
+    return backup_now()

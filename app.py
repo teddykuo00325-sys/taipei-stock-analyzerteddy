@@ -8,7 +8,8 @@ import logging
 
 from analyzer import (chart, data, diagnosis, etf, etf_scraper,
                       indicators, industry, live, marketdata,
-                      moneyflow, schools, screener, storage, watchlist)
+                      moneyflow, price_cache, schools, screener,
+                      storage, watchlist)
 
 logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 
@@ -336,6 +337,17 @@ st.sidebar.markdown(
 
 if "app_mode" not in st.session_state:
     st.session_state.app_mode = "🎯 今日選股"
+
+# === 啟動時自動從 GitHub 還原 K 線快取 ===
+if "_ohlcv_restored" not in st.session_state:
+    st.session_state._ohlcv_restored = True
+    if storage.is_configured():
+        try:
+            ok, msg = price_cache.auto_restore()
+            if ok:
+                st.toast(f"☁️ K 線快取已從 GitHub 還原：{msg}", icon="✅")
+        except Exception:
+            pass
 # 處理上一輪 rerun 設定的模式切換意圖（必須在 widget 渲染前）
 if "_mode_override" in st.session_state:
     st.session_state.app_mode = st.session_state.pop("_mode_override")
@@ -426,7 +438,43 @@ if mode == "🎯 今日選股":
     )
     go_btn = st.sidebar.button("🚀 開始掃描", use_container_width=True, type="primary")
 
-    st.sidebar.caption("💡 首次掃描約 2~5 分鐘；結果保留於 session，切換頁面後返回會繼續顯示")
+    # 快取狀態 + 手動備份
+    _pc_stats = price_cache.stats()
+    with st.sidebar.expander(
+            f"💾 K 線快取　"
+            f"({_pc_stats['codes']} 檔 / {_pc_stats['db_size_kb']:.0f} KB)",
+            expanded=False):
+        st.caption(
+            f"日期範圍：{_pc_stats['date_range'][0] or '—'}"
+            f" ~ {_pc_stats['date_range'][1] or '—'}\n\n"
+            "每檔股票首次抓取後存入本機 SQLite，之後只取增量日期。"
+        )
+        if storage.is_configured():
+            if st.button("☁️ 立即備份到 GitHub",
+                         key="ohlcv_backup",
+                         use_container_width=True):
+                with st.spinner("上傳中…"):
+                    ok, msg = price_cache.backup_now()
+                if ok:
+                    st.success(f"✅ {msg}")
+                else:
+                    st.error(f"❌ {msg}")
+            if st.button("⬇️ 從 GitHub 還原",
+                         key="ohlcv_restore",
+                         use_container_width=True):
+                with st.spinner("下載中…"):
+                    from analyzer.price_cache import DB_PATH as _PDB
+                    ok, msg = storage.download_db(_PDB,
+                                                   repo_path="data/ohlcv.db")
+                if ok:
+                    st.success(f"✅ {msg}")
+                    st.rerun()
+                else:
+                    st.warning(f"⚠️ {msg}")
+        else:
+            st.caption("⚠️ 未設定 GitHub secrets，無法跨重啟保留")
+
+    st.sidebar.caption("💡 首次掃描約 2~5 分鐘；第二次之後走快取只需 30 秒")
 
     render_market_sidebar()
 

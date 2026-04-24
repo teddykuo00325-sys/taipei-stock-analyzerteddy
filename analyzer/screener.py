@@ -147,7 +147,7 @@ def screen(
         if progress_cb:
             progress_cb(0.02 + pct * 0.60, msg)
 
-    price_cache.bulk_prepare(
+    cache_result = price_cache.bulk_prepare(
         codes, warm_period="2y",
         chunk_size=chunk_size, progress_cb=_warm_cb,
     )
@@ -172,6 +172,21 @@ def screen(
 
     if progress_cb:
         progress_cb(1.0, f"分析完成，{len(results)} 檔通過均量篩選")
+
+    # === 自動備份（有顯著變動時）===
+    new_data = cache_result.get("warmed", 0) + cache_result.get("updated", 0)
+    if new_data >= 10:
+        try:
+            from . import storage
+            if storage.is_configured():
+                if progress_cb:
+                    progress_cb(1.0,
+                                f"備份 K 線 DB 至 GitHub（新增 {new_data} 檔）…")
+                price_cache.backup_now(
+                    message=f"auto: +{new_data} codes via screener"
+                )
+        except Exception:
+            pass
 
     full_df = pd.DataFrame(results)
     if full_df.empty:
