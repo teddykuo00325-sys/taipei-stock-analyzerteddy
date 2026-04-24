@@ -17,14 +17,11 @@ from datetime import datetime
 from time import time
 
 import pandas as pd
-import requests
+
+from . import http
 
 MIS_URL = "https://mis.twse.com.tw/stock/api/getStockInfo.jsp"
-HEADERS = {
-    "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                   "AppleWebKit/537.36"),
-    "Referer": "https://mis.twse.com.tw/stock/fibest.jsp",
-}
+MIS_HEADERS = {"Referer": "https://mis.twse.com.tw/stock/fibest.jsp"}
 
 
 @dataclass
@@ -111,9 +108,9 @@ def _get(ex_ch: str, max_age_sec: float = 5.0):
     if c and now - c["t"] < max_age_sec:
         return c["v"]
     try:
-        r = requests.get(MIS_URL,
-                         params={"ex_ch": ex_ch, "json": "1", "delay": "0"},
-                         headers=HEADERS, timeout=6)
+        r = http.get(MIS_URL,
+                     params={"ex_ch": ex_ch, "json": "1", "delay": "0"},
+                     headers=MIS_HEADERS, timeout=6)
         r.raise_for_status()
         data = r.json()
     except Exception:

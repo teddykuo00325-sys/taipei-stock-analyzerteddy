@@ -5,7 +5,8 @@ from datetime import datetime, timedelta
 from time import time
 
 import pandas as pd
-import requests
+
+from . import http
 
 URL = "https://www.twse.com.tw/rwd/zh/fund/T86"
 
@@ -32,8 +33,7 @@ def _to_int(v) -> int:
 def _fetch_for(date_str: str) -> pd.DataFrame | None:
     params = {"date": date_str, "selectType": "ALLBUT0999", "response": "json"}
     try:
-        r = requests.get(URL, params=params, timeout=15,
-                         headers={"User-Agent": "Mozilla/5.0"})
+        r = http.get(URL, params=params, timeout=15)
         r.raise_for_status()
         j = r.json()
     except Exception:

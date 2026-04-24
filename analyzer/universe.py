@@ -5,7 +5,8 @@ from functools import lru_cache
 from time import time
 
 import pandas as pd
-import requests
+
+from . import http
 
 TWSE_STOCK_DAY_ALL = "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"
 
@@ -16,8 +17,7 @@ _NUMERIC_COLS = [
 
 
 def _fetch_twse_raw() -> list[dict]:
-    r = requests.get(TWSE_STOCK_DAY_ALL, timeout=20,
-                     headers={"User-Agent": "Mozilla/5.0"})
+    r = http.get(TWSE_STOCK_DAY_ALL, timeout=20)
     r.raise_for_status()
     return r.json()
 

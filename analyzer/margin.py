@@ -4,7 +4,8 @@ from __future__ import annotations
 from time import time
 
 import pandas as pd
-import requests
+
+from . import http
 
 URL = "https://openapi.twse.com.tw/v1/exchangeReport/MI_MARGN"
 
@@ -31,7 +32,7 @@ def _to_int(v) -> int:
 
 
 def _fetch_raw() -> pd.DataFrame:
-    r = requests.get(URL, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
+    r = http.get(URL, timeout=20)
     r.raise_for_status()
     data = r.json()
     df = pd.DataFrame(data)

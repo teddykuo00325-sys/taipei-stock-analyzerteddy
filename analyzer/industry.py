@@ -7,7 +7,8 @@ from __future__ import annotations
 from time import time
 
 import pandas as pd
-import requests
+
+from . import http
 
 TWSE_COMPANY_API = "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
 
@@ -36,8 +37,7 @@ _cache: dict = {"time": 0.0, "df": None}
 
 
 def _fetch_raw() -> pd.DataFrame:
-    r = requests.get(TWSE_COMPANY_API,
-                     headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
+    r = http.get(TWSE_COMPANY_API, timeout=20)
     r.raise_for_status()
     data = r.json()
     df = pd.DataFrame(data)

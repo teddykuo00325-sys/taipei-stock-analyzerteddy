@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from threading import Lock
 from time import time
@@ -109,6 +109,24 @@ def save_holdings(etf_code: str, date_str: str, holdings: list[Holding]) -> None
             [(date_str, etf_code, h.stock_code, h.stock_name, h.shares, h.weight)
              for h in holdings],
         )
+
+
+def purge_old(days: int = 90) -> int:
+    """刪除超過 N 天的持股 / AUM 資料 (預設保留 90 日). 回傳刪除筆數."""
+    cutoff = (date.today() - timedelta(days=days)).isoformat()
+    with _db_lock, _conn() as c:
+        n1 = c.execute("DELETE FROM etf_holdings WHERE date < ?",
+                       (cutoff,)).rowcount
+        n2 = c.execute("DELETE FROM etf_aum WHERE date < ?",
+                       (cutoff,)).rowcount
+        c.execute("VACUUM")
+    return (n1 or 0) + (n2 or 0)
+
+
+def db_size_kb() -> float:
+    if not DB_PATH.exists():
+        return 0.0
+    return DB_PATH.stat().st_size / 1024
 
 
 def list_holding_dates(etf_code: str) -> list[str]:

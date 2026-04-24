@@ -8,20 +8,15 @@ import logging
 
 from analyzer import (chart, data, diagnosis, etf, etf_scraper,
                       indicators, industry, live, marketdata,
-                      moneyflow, schools, screener)
+                      moneyflow, schools, screener, storage)
 
 logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 
 st.set_page_config(page_title="台北股市分析器", page_icon="📈", layout="wide")
 
-# === 禁用 Chrome 自動翻譯 + 加寬側邊欄 ===
+# === 加寬側邊欄 ===
 st.markdown("""
-<meta name="google" content="notranslate">
-<meta http-equiv="Content-Language" content="zh-TW">
 <style>
-html, body, [data-testid="stSidebar"], [data-testid="stAppViewContainer"] {
-    translate: no !important;
-}
 [data-testid="stSidebar"] {
     min-width: 340px !important;
     max-width: 420px !important;
@@ -37,18 +32,39 @@ html, body, [data-testid="stSidebar"], [data-testid="stAppViewContainer"] {
     font-size: 18px !important;
 }
 </style>
-<script>
-// 強制設定文件語言並阻止翻譯
-try {
-    window.parent.document.documentElement.lang = 'zh-TW';
-    window.parent.document.documentElement.setAttribute('translate', 'no');
-    window.parent.document.documentElement.classList.add('notranslate');
-} catch (e) {}
-document.documentElement.lang = 'zh-TW';
-document.documentElement.setAttribute('translate', 'no');
-document.documentElement.classList.add('notranslate');
-</script>
 """, unsafe_allow_html=True)
+
+# === 阻擋 Chrome 自動翻譯（透過 iframe 操作 parent document）===
+import streamlit.components.v1 as _components
+_components.html("""
+<script>
+(function() {
+    try {
+        var doc = window.parent.document;
+        doc.documentElement.lang = 'zh-TW';
+        doc.documentElement.setAttribute('translate', 'no');
+        doc.documentElement.classList.add('notranslate');
+        // 注入 meta 到 parent head
+        if (!doc.querySelector('meta[name="google"]')) {
+            var m1 = doc.createElement('meta');
+            m1.name = 'google';
+            m1.content = 'notranslate';
+            doc.head.appendChild(m1);
+        }
+        if (!doc.querySelector('meta[http-equiv="Content-Language"]')) {
+            var m2 = doc.createElement('meta');
+            m2.httpEquiv = 'Content-Language';
+            m2.content = 'zh-TW';
+            doc.head.appendChild(m2);
+        }
+        // 給所有元素加 notranslate class
+        var style = doc.createElement('style');
+        style.textContent = 'body, body * { translate: no !important; }';
+        doc.head.appendChild(style);
+    } catch (e) {}
+})();
+</script>
+""", height=0)
 DEFAULT_SCHOOL = schools.DEFAULT
 
 ACTION_ICONS = {"強力買進": "🔴🔴", "買進": "🔴", "觀望": "⚪",
@@ -504,6 +520,14 @@ elif mode == "📊 主動式ETF":
     st.title("📈 台北股市分析器")
     st.caption("📊 主動式 ETF 持股追蹤 — 依資產規模 (AUM) 自動選出前 5 大（台股專注）")
 
+    # === 持久化：首次載入自 GitHub 拉 DB ===
+    if storage.is_configured() and "etf_db_restored" not in st.session_state:
+        with st.spinner("從雲端同步 ETF 資料庫…"):
+            ok, msg = storage.download_db(etf.DB_PATH)
+        st.session_state.etf_db_restored = True
+        if ok:
+            st.caption(f"☁️ 已從 GitHub 還原 ETF DB：{msg}")
+
     with st.spinner("抓取各 ETF AUM 中…"):
         metas = etf.top_n(5, taiwan_only=True)
 
@@ -556,19 +580,71 @@ elif mode == "📊 主動式ETF":
 
     st.divider()
 
+    # === 資料庫狀態區 ===
+    st.markdown("#### 💾 資料庫狀態")
+    info_cols = st.columns(4)
+    db_size = etf.db_size_kb()
+    info_cols[0].metric("DB 大小", f"{db_size:.1f} KB")
+    total_dates = sum(len(etf.list_holding_dates(c)) for c in codes_list)
+    info_cols[1].metric("已記錄筆數", f"{total_dates} 日 × {len(codes_list)} ETF")
+    storage_cfg = storage.storage_info()
+    if storage_cfg.get("configured"):
+        info_cols[2].metric("雲端備份", "✅ 啟用",
+                            f"{storage_cfg['owner']}/{storage_cfg['repo']}")
+    else:
+        info_cols[2].metric("雲端備份", "⚠️ 未設定",
+                            "資料僅存本機")
+    info_cols[3].metric("保留期限", "90 日",
+                        "自動清除過期資料")
+
+    if not storage_cfg.get("configured"):
+        st.warning(
+            "⚠️ **GitHub 持久化未設定** — Streamlit Cloud 重啟會遺失歷史資料。\n\n"
+            "設定方式：到 **Streamlit Cloud → Settings → Secrets** 貼上：\n"
+            "```toml\n[github]\ntoken = \"ghp_...\"  # 建 PAT 並給 repo 寫入權限\n"
+            "owner = \"teddykuo00325-sys\"\nrepo = \"taipei-stock-analyzerteddy\"\n"
+            "branch = \"main\"\ndb_path = \"data/etf.db\"\n```"
+        )
+
     # 操作區
-    op_col1, op_col2 = st.columns([2, 3])
+    op_col1, op_col2, op_col3 = st.columns(3)
     with op_col1:
         if st.button("🔄 立即擷取所有 ETF 持股", use_container_width=True,
                      type="primary"):
             with st.spinner("向 MoneyDJ 抓取持股中…"):
                 results = etf_scraper.fetch_all(codes_list)
+            success_any = False
             for code, r in results.items():
                 if r.ok:
                     st.success(f"✅ {code} {r.etf_name}：{len(r.holdings)} 檔 @ {r.date}")
+                    success_any = True
                 else:
                     st.warning(f"⚠️ {code}：{r.error}")
+            # 清除過期 + 雲端備份
+            if success_any:
+                purged = etf.purge_old(days=90)
+                if purged:
+                    st.info(f"🗑️ 已清除 {purged} 筆 90 日前舊資料")
+                if storage_cfg.get("configured"):
+                    with st.spinner("備份至 GitHub…"):
+                        ok, msg = storage.upload_db(etf.DB_PATH,
+                                                    message="auto: ETF holdings update")
+                    if ok:
+                        st.success(f"☁️ 已備份：{msg}")
+                    else:
+                        st.warning(f"☁️ 備份失敗：{msg}")
             st.rerun()
+
+    with op_col3:
+        if storage_cfg.get("configured") and st.button(
+                "☁️ 手動備份 DB", use_container_width=True):
+            with st.spinner("上傳中…"):
+                ok, msg = storage.upload_db(etf.DB_PATH,
+                                            message="manual: backup")
+            if ok:
+                st.success(f"✅ {msg}")
+            else:
+                st.error(f"❌ {msg}")
 
     with op_col2:
         with st.expander("📥 手動匯入 CSV 持股（備援方案）", expanded=False):

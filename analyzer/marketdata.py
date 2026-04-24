@@ -10,8 +10,9 @@ import re
 from dataclasses import dataclass
 from time import time
 
-import requests
 import yfinance as yf
+
+from . import http as _http
 
 try:
     from bs4 import BeautifulSoup
@@ -31,8 +32,6 @@ YF_TICKERS = {
     "jpy_twd": ("JPYTWD=X", "💴 日圓/台幣",    4),
 }
 
-SESSION = requests.Session()
-SESSION.headers.update({"User-Agent": "Mozilla/5.0"})
 
 
 @dataclass
@@ -97,7 +96,7 @@ def fetch_gck99(max_age_sec: int = 600) -> dict[str, str]:
         prices["_err"] = "未安裝 beautifulsoup4"
         return prices
     try:
-        r = SESSION.get("https://www.gck99.com.tw/", timeout=10)
+        r = _http.get("https://www.gck99.com.tw/", timeout=10)
         r.raise_for_status()
     except Exception as e:
         prices["_err"] = f"連線失敗：{e}"

@@ -11,17 +11,11 @@ from dataclasses import dataclass
 from datetime import date
 
 import pandas as pd
-import requests
 
-from . import etf
+from . import etf, http
 from .etf import Holding, register_name, save_holdings
 
 MONEYDJ_URL = "https://www.moneydj.com/ETF/X/Basic/Basic0007B.xdjhtm"
-HEADERS = {
-    "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                   "AppleWebKit/537.36 (KHTML, like Gecko) "
-                   "Chrome/119.0.0.0 Safari/537.36"),
-}
 
 
 @dataclass
@@ -77,10 +71,9 @@ def _parse_moneydj(html: str, etf_code: str) -> FetchResult:
 def fetch_holdings(etf_code: str, timeout: int = 15) -> FetchResult:
     etf_code = etf_code.strip().upper()
     try:
-        r = requests.get(MONEYDJ_URL, params={"etfid": f"{etf_code}.TW"},
-                         headers=HEADERS, timeout=timeout)
+        r = http.get(MONEYDJ_URL, params={"etfid": f"{etf_code}.TW"},
+                     timeout=timeout)
         r.raise_for_status()
-        # MoneyDJ 頁面通常是 UTF-8
         r.encoding = r.apparent_encoding or "utf-8"
         return _parse_moneydj(r.text, etf_code)
     except Exception as e:
