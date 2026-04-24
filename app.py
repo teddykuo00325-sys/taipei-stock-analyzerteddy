@@ -1758,56 +1758,94 @@ else:
         pass
 
     # ============================================================
-    # 📌 頂部：資訊列 + 診斷書 + 關鍵價位 + 分數構成
+    # 📌 頂部：大標題列（名稱/代號 + 現價超大）
     # ============================================================
     import datetime as _dt_ind
     now_str = _dt_ind.datetime.now().strftime("%Y-%m-%d %H:%M")
-    c1, c2, c3, c4 = st.columns([3, 2, 2, 2])
     # 續漲/續跌標籤
     cont_tag = ""
     if diag.continuation_label == "續漲":
-        cont_tag = ("<span style='background:rgba(214,39,40,0.25); "
-                    "color:#ff8080; padding:2px 8px; border-radius:10px; "
-                    "font-size:13px; font-weight:600; margin-left:8px;'>"
+        cont_tag = ("<span style='background:rgba(214,39,40,0.3); "
+                    "color:#ff8080; padding:4px 10px; border-radius:12px; "
+                    "font-size:15px; font-weight:700; margin-left:10px;'>"
                     "📈 續漲</span>")
     elif diag.continuation_label == "續跌":
-        cont_tag = ("<span style='background:rgba(44,160,44,0.25); "
-                    "color:#3dbd6e; padding:2px 8px; border-radius:10px; "
-                    "font-size:13px; font-weight:600; margin-left:8px;'>"
+        cont_tag = ("<span style='background:rgba(44,160,44,0.3); "
+                    "color:#3dbd6e; padding:4px 10px; border-radius:12px; "
+                    "font-size:15px; font-weight:700; margin-left:10px;'>"
                     "📉 續跌</span>")
     elif diag.continuation_label == "震盪":
-        cont_tag = ("<span style='background:rgba(255,215,0,0.25); "
-                    "color:#ffd700; padding:2px 8px; border-radius:10px; "
-                    "font-size:13px; font-weight:600; margin-left:8px;'>"
+        cont_tag = ("<span style='background:rgba(255,215,0,0.3); "
+                    "color:#ffd700; padding:4px 10px; border-radius:12px; "
+                    "font-size:15px; font-weight:700; margin-left:10px;'>"
                     "↔️ 震盪</span>")
-    # 頂部股票資訊 (改用 HTML 加續漲標籤)
-    st.markdown(
-        f"<div style='font-size:13px; color:#aaa; margin-bottom:6px;'>"
-        f"<b style='color:#fafafa; font-size:16px;'>{name} ({code})</b>"
-        f"{cont_tag}"
-        f"</div>",
-        unsafe_allow_html=True,
-    )
-    c1.metric("現價", f"{price:,.2f}",
-              f"{chg:+.2f} ({chg_pct:+.2f}%)")
-    rev_caption = ""
+    # 產業標籤
+    ind_tag = (f"<span style='background:rgba(100,180,255,0.25); "
+               f"color:#7ab8ff; padding:3px 10px; border-radius:10px; "
+               f"font-size:14px; font-weight:600; margin-left:8px;'>"
+               f"{ind_name}</span>" if ind_name and ind_name != "—" else "")
+    chg_color = "#e55353" if chg > 0 else "#3dbd6e" if chg < 0 else "#aaa"
+    chg_sign = "+" if chg >= 0 else ""
+    arrow = "▲" if chg > 0 else "▼" if chg < 0 else "="
+
+    # 大標題：股票名稱 + 代號 + 標籤 | 現價超大
+    rev_line = ""
     if rev_info and rev_info.yoy_pct:
-        yoy_color = "#e55353" if rev_info.yoy_pct > 0 else "#3dbd6e"
-        rev_caption = (f"　·　📊 {rev_info.year_month} 營收 "
-                       f"<span style='color:#f5c342;'>"
-                       f"{rev_info.revenue_k / 1e5:.1f} 億</span> "
-                       f"YoY <span style='color:{yoy_color};'>"
-                       f"{rev_info.yoy_pct:+.1f}%</span>")
-    c1.markdown(
-        f"<div style='font-size:12px; color:#999; margin-top:-8px;'>"
-        f"🏭 <b>{ind_name}</b> · {full_name[:18]} · "
-        f"🕒 {now_str}{rev_caption}</div>",
+        yoy_c = "#e55353" if rev_info.yoy_pct > 0 else "#3dbd6e"
+        rev_line = (f"<span style='font-size:13px; color:#bbb; "
+                    f"margin-left:12px;'>"
+                    f"📊 {rev_info.year_month} 營收 "
+                    f"<b style='color:#f5c342;'>"
+                    f"{rev_info.revenue_k / 1e5:.1f}億</b> "
+                    f"YoY <b style='color:{yoy_c};'>"
+                    f"{rev_info.yoy_pct:+.1f}%</b></span>")
+
+    st.markdown(
+        f"""
+        <div style='display:flex; justify-content:space-between;
+                    align-items:center; flex-wrap:wrap; gap:10px;
+                    padding:10px 4px; border-bottom:2px solid #333;
+                    margin-bottom:12px;'>
+          <div style='flex:1; min-width:250px;'>
+            <div style='font-size:28px; font-weight:800; color:#fafafa;
+                        line-height:1.2;'>
+              {name}
+              <span style='color:#bbb; font-size:22px; font-weight:700;
+                           margin-left:8px;'>({code})</span>
+              {cont_tag}{ind_tag}
+            </div>
+            <div style='font-size:12px; color:#888; margin-top:4px;'>
+              🏭 {full_name[:30]} · 🕒 {now_str}{rev_line}
+            </div>
+          </div>
+          <div style='text-align:right;'>
+            <div style='font-size:11px; color:#999;'>現價</div>
+            <div style='font-size:46px; font-weight:800; color:{chg_color};
+                        letter-spacing:-1px; line-height:1;'>
+              {price:,.2f}
+            </div>
+            <div style='font-size:17px; font-weight:700; color:{chg_color};
+                        margin-top:2px;'>
+              {arrow} {chg_sign}{chg:.2f} ({chg_sign}{chg_pct:.2f}%)
+            </div>
+          </div>
+        </div>
+        """,
         unsafe_allow_html=True,
     )
-    c2.metric("成交量", f"{int(last['volume']):,}",
-              f"{(last['volume'] / last['vol_ma5'] - 1) * 100:+.1f}% vs 5MA")
-    c3.metric("多空評分", f"{diag.score:+d}", diag.stance)
-    c4.metric(f"{ACTION_ICONS.get(diag.action, '')} 建議", diag.action)
+
+    # 下面 4 欄小資訊
+    sc1, sc2, sc3, sc4 = st.columns(4)
+    sc1.metric("成交量", f"{int(last['volume']):,}",
+               f"{(last['volume'] / last['vol_ma5'] - 1) * 100:+.1f}% vs 5MA")
+    sc2.metric("多空評分", f"{diag.score:+d}", diag.stance)
+    sc3.metric(f"{ACTION_ICONS.get(diag.action, '')} 建議", diag.action)
+    if diag.risk_reward is not None:
+        rr_label = ("🟢 優" if diag.risk_reward >= 2
+                    else "🟡 可" if diag.risk_reward >= 1 else "🔴 差")
+        sc4.metric("風險報酬比", f"{diag.risk_reward:.2f} : 1", rr_label)
+    else:
+        sc4.metric("風險報酬比", "—")
 
     st.subheader("🩺 個股診斷書")
     banner = f"**{diag.stance}格局 · {diag.action}** — {diag.action_note}"
@@ -1850,18 +1888,23 @@ else:
 
     # ---- 🎯 關鍵價位 ----
     st.markdown("#### 🎯 關鍵價位")
-    col_t, col_e, col_s, col_r = st.columns(4)
+    col_p, col_t, col_e, col_s = st.columns(4)
+    with col_p:
+        # 現價
+        st.metric("📍 現價", f"{price:,.2f}",
+                  f"{chg_sign}{chg:.2f} ({chg_sign}{chg_pct:.2f}%)")
+        st.caption(f"{arrow} 當前成交價")
     with col_t:
         if diag.target_price:
             pct = (diag.target_price / price - 1) * 100
-            st.metric("目標價", f"{diag.target_price:,.2f}", f"{pct:+.2f}%")
+            st.metric("🎯 目標價", f"{diag.target_price:,.2f}", f"{pct:+.2f}%")
             st.caption(f"依據：{diag.target_note}")
         else:
-            st.metric("目標價", "—")
+            st.metric("🎯 目標價", "—")
     with col_e:
         if diag.entry_zone:
             lo, hi = diag.entry_zone
-            st.metric("建議進場區", f"{lo:,.2f} ~ {hi:,.2f}")
+            st.metric("💡 建議進場區", f"{lo:,.2f} ~ {hi:,.2f}")
             if price < lo:
                 st.caption("✅ 現價低於進場區，可分批佈局")
             elif price <= hi:
@@ -1869,22 +1912,16 @@ else:
             else:
                 st.caption("⚠️ 現價高於進場區，等待拉回")
         else:
-            st.metric("建議進場區", "—")
+            st.metric("💡 建議進場區", "—")
     with col_s:
         if diag.short_stop:
             pct = (diag.short_stop / price - 1) * 100
-            st.metric("短線停損 (MA10)", f"{diag.short_stop:,.2f}", f"{pct:+.2f}%")
+            st.metric("🛑 短線停損 (MA10)",
+                      f"{diag.short_stop:,.2f}", f"{pct:+.2f}%")
         if diag.mid_stop:
             pct = (diag.mid_stop / price - 1) * 100
             st.caption(f"中線停損 (MA20)：**{diag.mid_stop:,.2f}**（{pct:+.2f}%）")
         st.caption(f"絕對停損：**{diag.abs_stop:,.2f}**")
-    with col_r:
-        if diag.risk_reward is not None:
-            label = "🟢 優" if diag.risk_reward >= 2 else \
-                    ("🟡 可" if diag.risk_reward >= 1 else "🔴 差")
-            st.metric("風險報酬比", f"{diag.risk_reward:.2f} : 1", label)
-        else:
-            st.metric("風險報酬比", "—")
 
     # ---- 📊 分數構成（各指標貢獻） ----
     with st.expander("📊 分數構成明細（各指標貢獻）", expanded=False):
