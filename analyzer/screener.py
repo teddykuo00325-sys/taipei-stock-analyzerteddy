@@ -37,7 +37,9 @@ def _score_one(code: str, name: str, df: pd.DataFrame,
         if avg_vol < min_avg_volume_lots * 1000:
             return None
         dff = indicators.add_all(df)
-        d = diagnosis.diagnose(dff, code=code, include_chips=True)
+        # 選股批次：detailed=False 節省 scan_history + multi_sr 時間
+        d = diagnosis.diagnose(dff, code=code,
+                               include_chips=True, detailed=False)
         last = dff.iloc[-1]
         prev = dff.iloc[-2]
         # 量價簡述
@@ -78,7 +80,8 @@ def _score_one(code: str, name: str, df: pd.DataFrame,
             "風報比": d.risk_reward,
             "_df_tail": dff.tail(90).copy(),
             "_diag": d,
-            "_patterns_hist": candlestick.scan_history(dff, lookback=60),
+            # 選股列表只標最近 5 根轉折就夠（lookback=30 省時）
+            "_patterns_hist": candlestick.scan_history(dff, lookback=30),
             "_in_entry_zone": bool(
                 d.entry_zone and d.entry_zone[0] <= float(last["close"])
                 <= d.entry_zone[1]

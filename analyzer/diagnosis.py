@@ -137,7 +137,12 @@ def diagnose(df: pd.DataFrame,
              code: str | None = None,
              weekly_df: pd.DataFrame | None = None,
              school: str | None = None,
-             include_chips: bool = True) -> Diagnosis:
+             include_chips: bool = True,
+             detailed: bool = True) -> Diagnosis:
+    """
+    detailed=True  : 計算完整 candle_history + multi_sr (個股查詢)
+    detailed=False : 略過，節省時間 (選股器批次用)
+    """
     mod = schools.get(school)
     weights = mod.score_weights() if hasattr(mod, "score_weights") else {}
 
@@ -159,11 +164,15 @@ def diagnose(df: pd.DataFrame,
     econ_s, econ_note = econophysics.score_adj(df)
     fib_obj = fibonacci.analyze(df)
     fib_s, fib_note = fibonacci.score_adj(df)
-    # 一併算好 candle_history 與 multi S/R 供下游重用
-    candle_hist = candlestick.scan_history(df, lookback=90)
-    try:
-        msup, mres = patterns.multi_sr(df, n=3)
-    except Exception:
+    # 一併算好 candle_history 與 multi S/R 供下游重用（僅 detailed 模式）
+    if detailed:
+        candle_hist = candlestick.scan_history(df, lookback=90)
+        try:
+            msup, mres = patterns.multi_sr(df, n=3)
+        except Exception:
+            msup, mres = [], []
+    else:
+        candle_hist = []
         msup, mres = [], []
 
     inst_info = None
