@@ -53,5 +53,16 @@ def add_rsi(df: pd.DataFrame, period=14) -> pd.DataFrame:
     return out
 
 
+def add_atr(df: pd.DataFrame, period: int = 14) -> pd.DataFrame:
+    """平均真實區間 (ATR) — 用於波動率調整的停損."""
+    out = df.copy()
+    high_low = out["high"] - out["low"]
+    high_close = (out["high"] - out["close"].shift()).abs()
+    low_close = (out["low"] - out["close"].shift()).abs()
+    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+    out["atr14"] = tr.rolling(period).mean()
+    return out
+
+
 def add_all(df: pd.DataFrame) -> pd.DataFrame:
-    return add_rsi(add_kd(add_macd(add_ma(df))))
+    return add_atr(add_rsi(add_kd(add_macd(add_ma(df)))))

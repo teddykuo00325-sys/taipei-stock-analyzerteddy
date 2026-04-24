@@ -215,20 +215,35 @@ def generate_signals(df: pd.DataFrame) -> list[Signal]:
 # 停損停利
 # ===================================================================
 def stop_levels(df: pd.DataFrame) -> dict:
-    """朱式三層停損（停損價為均線「跌破確認」= MA * 0.98）：
-    - 短線：跌破 MA10（= MA10 × 0.98 視為確認跌破）
-    - 中線：跌破 MA20（= MA20 × 0.98）
-    - 絕對：前 20 日低點（絕不破）
+    """朱式三層停損（波動率調整）：
+    - 短線：max(MA10 × 0.98, 現價 − 1.5 × ATR14)
+      高波動股 → ATR 生效避免太緊；低波動股 → 固定 2% 生效
+    - 中線：max(MA20 × 0.98, 現價 − 2.5 × ATR14)
+    - 絕對：前 20 日低點
     """
     last = df.iloc[-1]
-    recent_low = df["low"].tail(20).min()
+    price = float(last["close"])
+    recent_low = float(df["low"].tail(20).min())
     ma10 = last.get("ma10")
     ma20 = last.get("ma20")
+    atr = last.get("atr14")
+    atr_val = float(atr) if (atr is not None and not pd.isna(atr)) else 0
+
+    def _smart_stop(ma_val, atr_mult):
+        if ma_val is None or pd.isna(ma_val):
+            return None
+        fixed = float(ma_val) * 0.98
+        if atr_val > 0:
+            atr_floor = price - atr_mult * atr_val
+            # 取較高者（較保守的停損，避免過度緊）
+            return round(max(fixed, atr_floor), 2)
+        return round(fixed, 2)
+
     return {
-        # 停損設在 MA 下方 2%：代表「確認跌破」，給均線一個緩衝
-        "short_stop": float(ma10) * 0.98 if not pd.isna(ma10) else None,
-        "mid_stop": float(ma20) * 0.98 if not pd.isna(ma20) else None,
-        "abs_stop": float(recent_low),
+        "short_stop": _smart_stop(ma10, 1.5),
+        "mid_stop": _smart_stop(ma20, 2.5),
+        "abs_stop": round(recent_low, 2),
+        "atr14": atr_val,
     }
 
 

@@ -1716,7 +1716,16 @@ else:
             if live_quote:
                 df_raw = live.overlay_today(df_raw, live_quote)
 
-    df = indicators.add_all(df_raw)
+    @st.cache_data(ttl=300, show_spinner=False,
+                   hash_funcs={pd.DataFrame: lambda d: (
+                       len(d),
+                       float(d["close"].iloc[-1]) if len(d) else 0,
+                       str(d.index[-1]) if len(d) else "",
+                   )})
+    def _cached_add_indicators(raw: pd.DataFrame) -> pd.DataFrame:
+        return indicators.add_all(raw)
+
+    df = _cached_add_indicators(df_raw)
     diag = diagnosis.diagnose(df, code=code, weekly_df=weekly_df,
                               school=DEFAULT_SCHOOL)
 
