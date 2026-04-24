@@ -81,10 +81,17 @@ def render_card(row: pd.Series, rank: int):
     chg_sign = "+" if row["漲跌%"] >= 0 else ""
     import datetime as _dtk
     now_str = _dtk.datetime.now().strftime("%Y-%m-%d %H:%M")
-    tgt_str = ""
-    if d.target_price:
-        pct = (d.target_price / row["收盤"] - 1) * 100
-        tgt_str = f" · 目標 {d.target_price:.2f} ({pct:+.1f}%)"
+    entry_str = ""
+    if d.entry_zone:
+        lo, hi = d.entry_zone
+        price_now = row["收盤"]
+        if price_now < lo:
+            hint = "✅ 低於進場區"
+        elif price_now <= hi:
+            hint = "✅ 位於進場區"
+        else:
+            hint = "⚠️ 高於進場區"
+        entry_str = f" · 建議進場 {lo:.2f}~{hi:.2f}  {hint}"
 
     with st.container(border=True):
         st.markdown(
@@ -92,7 +99,7 @@ def render_card(row: pd.Series, rank: int):
             f"<small>現價 {row['收盤']:.2f} ({chg_sign}{row['漲跌%']:.2f}%)　·　"
             f"🕒 {now_str}</small>　"
             f"{score_icon} **分數 {d.score:+d}**　"
-            f"{ACTION_ICONS.get(d.action, '')} **{d.action}**{tgt_str}",
+            f"{ACTION_ICONS.get(d.action, '')} **{d.action}**{entry_str}",
             unsafe_allow_html=True,
         )
 
