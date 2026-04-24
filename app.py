@@ -290,23 +290,22 @@ if mode == "🎯 今日選股":
         st.session_state.screener_params = None
         st.session_state.screener_time = None
 
-    @st.cache_data(ttl=3600, show_spinner=False)
-    def run_screen(min_vol, top_n, pre_filter, _progress_bar):
-        def cb(pct, msg):
-            _progress_bar.progress(min(max(pct, 0), 1.0), text=msg)
-        return screener.screen(
-            min_avg_volume_lots=min_vol, top_n=top_n,
-            pre_filter_lots_today=pre_filter, progress_cb=cb,
-        )
-
     if go_btn:
+        cur_params = (int(min_vol), int(top_n), int(pre_filter))
         progress_bar = st.progress(0.0, text="初始化…")
+
+        def _cb(pct, msg):
+            progress_bar.progress(min(max(pct, 0.0), 1.0), text=msg)
+
         try:
-            result = run_screen(int(min_vol), int(top_n), int(pre_filter),
-                                progress_bar)
+            result = screener.screen(
+                min_avg_volume_lots=int(min_vol),
+                top_n=int(top_n),
+                pre_filter_lots_today=int(pre_filter),
+                progress_cb=_cb,
+            )
             st.session_state.screener_result = result
-            st.session_state.screener_params = (int(min_vol), int(top_n),
-                                                int(pre_filter))
+            st.session_state.screener_params = cur_params
             import datetime as _dt
             st.session_state.screener_time = _dt.datetime.now().strftime(
                 "%Y-%m-%d %H:%M")
