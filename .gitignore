@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.venv/
+venv/
+env/
+.python-version
+
+# 本地資料（雲端會自動重抓）
+data/*.db
+data/*.db-journal
+data/*.db-wal
+data/*.db-shm
+
+# 版權書籍（不上傳）
+朱家泓電子書/
+*.pdf
+
+# Streamlit 機密檔
+.streamlit/secrets.toml
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# 日誌與暫存
+*.log
+*.tmp
