@@ -106,6 +106,67 @@ def detect(df: pd.DataFrame, order: int = 5, lookback: int = 120) -> list[Patter
                     "三重頂", "bear", float(neck),
                     "三次測試同一壓力未過；跌破頸線為強烈賣出訊號"))
 
+    # --- 上升直角三角形（水平壓力 + 低點墊高）---
+    if len(highs_idx) >= 2 and len(lows_idx) >= 2:
+        last_highs = highs_idx[-3:] if len(highs_idx) >= 3 else highs_idx[-2:]
+        last_lows = lows_idx[-3:] if len(lows_idx) >= 3 else lows_idx[-2:]
+        if len(last_highs) >= 2 and len(last_lows) >= 2:
+            hp = [float(tail["close"].iloc[i]) for i in last_highs]
+            lp = [float(tail["close"].iloc[i]) for i in last_lows]
+            # 高點水平 (差距 < 3%) + 低點逐個墊高
+            highs_flat = max(hp) - min(hp) < max(hp) * 0.03
+            lows_rising = all(lp[i] < lp[i + 1] for i in range(len(lp) - 1))
+            if highs_flat and lows_rising:
+                res = sum(hp) / len(hp)
+                patterns.append(Pattern(
+                    "上升直角三角形底", "bull", float(res),
+                    "水平壓力 + 低點逐步墊高，多頭積累；突破上方壓力為買點"))
+            # 下降直角：低點水平 + 高點逐個走低
+            lows_flat = max(lp) - min(lp) < max(lp) * 0.03
+            highs_falling = all(hp[i] > hp[i + 1]
+                                for i in range(len(hp) - 1))
+            if lows_flat and highs_falling:
+                sup = sum(lp) / len(lp)
+                patterns.append(Pattern(
+                    "下降直角三角形頂", "bear", float(sup),
+                    "水平支撐 + 高點逐步走低，空頭積累；跌破下方支撐為賣點"))
+
+    # --- 對稱三角形（高點下降 + 低點墊高）---
+    if len(highs_idx) >= 2 and len(lows_idx) >= 2:
+        last_highs = highs_idx[-2:]
+        last_lows = lows_idx[-2:]
+        hp = [float(tail["close"].iloc[i]) for i in last_highs]
+        lp = [float(tail["close"].iloc[i]) for i in last_lows]
+        if hp[-1] < hp[0] and lp[-1] > lp[0]:
+            # 距離夠（至少 15 bar）
+            span = (max(last_highs + last_lows)
+                    - min(last_highs + last_lows))
+            if span >= 15:
+                mid = (hp[-1] + lp[-1]) / 2
+                patterns.append(Pattern(
+                    "對稱三角收斂", "neutral", float(mid),
+                    "高點下降、低點墊高，向尖端收斂；突破方向為趨勢訊號"))
+
+    # --- 旗形整理（急漲後小範圍平行通道）---
+    if len(tail) >= 30:
+        # 近 20 日前 10 日漲幅 > 10%、後 10 日區間窄 (< 5%)
+        before = tail["close"].iloc[-25:-15]
+        after = tail["close"].iloc[-12:]
+        if not before.empty and not after.empty:
+            rise = (before.iloc[-1] / before.iloc[0] - 1) * 100
+            drop = (before.iloc[0] / before.iloc[-1] - 1) * 100
+            after_range = (after.max() - after.min()) / after.mean() * 100
+            if rise > 10 and after_range < 6:
+                patterns.append(Pattern(
+                    "上升旗形整理", "bull", float(after.max()),
+                    f"急漲 {rise:.1f}% 後窄幅整理 {after_range:.1f}%；"
+                    "突破上緣續漲機率高"))
+            if drop > 10 and after_range < 6:
+                patterns.append(Pattern(
+                    "下降旗形整理", "bear", float(after.min()),
+                    f"急跌 {drop:.1f}% 後窄幅反彈 {after_range:.1f}%；"
+                    "跌破下緣續跌機率高"))
+
     # --- ABC 修正：下跌波 - 反彈 B - 續跌 C（多方回檔結束判讀）---
     if len(highs_idx) >= 2 and len(lows_idx) >= 2:
         last_highs = sorted(highs_idx)[-2:]

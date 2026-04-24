@@ -35,6 +35,8 @@ class Diagnosis:
     target_note: str = ""
     risk_reward: float | None = None
     entry_zone: tuple[float, float] | None = None
+    # 續漲/續跌標籤
+    continuation_label: str = ""   # "續漲" / "續跌" / "震盪" / ""
     # --- 新增欄位 ---
     institutional_info: dict | None = None
     institutional_note: str = ""
@@ -214,6 +216,19 @@ def diagnose(df: pd.DataFrame,
 
     stance = _stance(score)
     action, action_note = _action(score, ma_state, weekly_bull)
+
+    # 續漲/續跌 判斷：MA 排列 + 近 5 日收盤方向
+    cont_label = ""
+    if len(df) >= 5:
+        recent5 = df.tail(5)
+        delta5 = (recent5["close"].iloc[-1] / recent5["close"].iloc[0]
+                  - 1) * 100
+        if ma_state in ("多頭排列", "偏多") and delta5 >= 0:
+            cont_label = "續漲"
+        elif ma_state in ("空頭排列", "偏空") and delta5 <= 0:
+            cont_label = "續跌"
+        elif ma_state in ("均線糾結", "盤整"):
+            cont_label = "震盪"
     target_price, target_note = _target(df, pats, stance,
                                         trend["resistance"], trend["support"])
 
@@ -318,4 +333,5 @@ def diagnose(df: pd.DataFrame,
         wave_confidence=w.confidence, wave_note=w.note, wave_score=wave_s,
         econ=econ_obj, econ_score=econ_s, econ_note=econ_note,
         fib=fib_obj, fib_score=fib_s, fib_note=fib_note,
+        continuation_label=cont_label,
     )

@@ -8,8 +8,8 @@ import logging
 
 from analyzer import (chart, data, diagnosis, etf, etf_scraper,
                       indicators, industry, live, marketdata,
-                      moneyflow, price_cache, schools, screener,
-                      storage, watchlist)
+                      moneyflow, price_cache, revenue, schools,
+                      screener, shareholders, storage, watchlist)
 
 logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 
@@ -1721,6 +1721,12 @@ else:
     info = industry.info_for(code)
     ind_name = info["industry"] if info else "—"
     full_name = info["full_name"] if info else name
+    # 月營收（可選）
+    rev_info = None
+    try:
+        rev_info = revenue.for_code(code)
+    except Exception:
+        pass
 
     # ============================================================
     # 📌 頂部：資訊列 + 診斷書 + 關鍵價位 + 分數構成
@@ -1728,9 +1734,47 @@ else:
     import datetime as _dt_ind
     now_str = _dt_ind.datetime.now().strftime("%Y-%m-%d %H:%M")
     c1, c2, c3, c4 = st.columns([3, 2, 2, 2])
-    c1.metric(f"{name} ({code})　現價", f"{price:,.2f}",
+    # 續漲/續跌標籤
+    cont_tag = ""
+    if diag.continuation_label == "續漲":
+        cont_tag = ("<span style='background:rgba(214,39,40,0.25); "
+                    "color:#ff8080; padding:2px 8px; border-radius:10px; "
+                    "font-size:13px; font-weight:600; margin-left:8px;'>"
+                    "📈 續漲</span>")
+    elif diag.continuation_label == "續跌":
+        cont_tag = ("<span style='background:rgba(44,160,44,0.25); "
+                    "color:#3dbd6e; padding:2px 8px; border-radius:10px; "
+                    "font-size:13px; font-weight:600; margin-left:8px;'>"
+                    "📉 續跌</span>")
+    elif diag.continuation_label == "震盪":
+        cont_tag = ("<span style='background:rgba(255,215,0,0.25); "
+                    "color:#ffd700; padding:2px 8px; border-radius:10px; "
+                    "font-size:13px; font-weight:600; margin-left:8px;'>"
+                    "↔️ 震盪</span>")
+    # 頂部股票資訊 (改用 HTML 加續漲標籤)
+    st.markdown(
+        f"<div style='font-size:13px; color:#aaa; margin-bottom:6px;'>"
+        f"<b style='color:#fafafa; font-size:16px;'>{name} ({code})</b>"
+        f"{cont_tag}"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+    c1.metric("現價", f"{price:,.2f}",
               f"{chg:+.2f} ({chg_pct:+.2f}%)")
-    c1.caption(f"🏭 **{ind_name}** · {full_name[:20]} · 🕒 {now_str}")
+    rev_caption = ""
+    if rev_info and rev_info.yoy_pct:
+        yoy_color = "#e55353" if rev_info.yoy_pct > 0 else "#3dbd6e"
+        rev_caption = (f"　·　📊 {rev_info.year_month} 營收 "
+                       f"<span style='color:#f5c342;'>"
+                       f"{rev_info.revenue_k / 1e5:.1f} 億</span> "
+                       f"YoY <span style='color:{yoy_color};'>"
+                       f"{rev_info.yoy_pct:+.1f}%</span>")
+    c1.markdown(
+        f"<div style='font-size:12px; color:#999; margin-top:-8px;'>"
+        f"🏭 <b>{ind_name}</b> · {full_name[:18]} · "
+        f"🕒 {now_str}{rev_caption}</div>",
+        unsafe_allow_html=True,
+    )
     c2.metric("成交量", f"{int(last['volume']):,}",
               f"{(last['volume'] / last['vol_ma5'] - 1) * 100:+.1f}% vs 5MA")
     c3.metric("多空評分", f"{diag.score:+d}", diag.stance)
@@ -2188,6 +2232,55 @@ else:
             mc[3].metric("籌碼加權", f"{diag.margin_score:+d}")
             if diag.margin_note:
                 st.caption(f"📝 {diag.margin_note}")
+
+        st.markdown("#### 📦 股權分布 (集保 TDCC · 每週更新)")
+        try:
+            holder = shareholders.for_code(code)
+        except Exception:
+            holder = None
+        if not holder:
+            st.info("無股權分散資料")
+        else:
+            hc = st.columns(5)
+            hc[0].metric("🌟 千張大戶",
+                         f"{holder.kilo_pct:.2f}%",
+                         "> 100萬 股")
+            hc[1].metric("🏦 大戶",
+                         f"{holder.big_pct:.2f}%",
+                         "10~100 萬股")
+            hc[2].metric("🧑‍💼 中戶",
+                         f"{holder.mid_pct:.2f}%",
+                         "1萬~5萬股")
+            hc[3].metric("👥 散戶",
+                         f"{holder.retail_pct:.2f}%",
+                         "< 1萬股")
+            hc[4].metric("總股東",
+                         f"{holder.total_holders:,}",
+                         f"@ {holder.date}")
+            # 歷史趨勢圖（若有 2 筆以上）
+            hist = shareholders.history(code)
+            if len(hist) >= 2:
+                import plotly.graph_objects as _go_h
+                fig_h = _go_h.Figure()
+                hist["date"] = pd.to_datetime(hist["date"])
+                fig_h.add_trace(_go_h.Scatter(
+                    x=hist["date"], y=hist["kilo_pct"],
+                    mode="lines+markers", name="千張大戶 %",
+                    line=dict(color="#ffd700", width=2)))
+                fig_h.add_trace(_go_h.Scatter(
+                    x=hist["date"], y=hist["retail_pct"],
+                    mode="lines+markers", name="散戶 %",
+                    line=dict(color="#1f77b4", width=2)))
+                fig_h.update_layout(
+                    height=260, margin=dict(l=10, r=10, t=30, b=10),
+                    title="股權分散歷史趨勢",
+                    yaxis_title="佔比 %",
+                    legend=dict(orientation="h", y=1.1),
+                )
+                st.plotly_chart(fig_h, use_container_width=True,
+                                config={"displayModeBar": False})
+            else:
+                st.caption("💡 每次查詢會累積一筆快照，多查幾次後自動呈現歷史趨勢。")
 
         st.markdown("#### 🎯 主動式 ETF 持股")
         holders = etf.holders_of(code)
