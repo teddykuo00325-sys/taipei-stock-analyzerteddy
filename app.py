@@ -78,11 +78,12 @@ def render_index_header():
     except Exception:
         idx = {}
     upd = marketdata.idx_last_update()
-    title_col, banner_col = st.columns([2.5, 4])
+    # 標題與指數各佔一半，指數列字型放大
+    title_col, banner_col = st.columns([1.6, 3])
     with title_col:
         st.markdown(
-            f"<h2 style='margin:0; padding:0;'>"
-            f"Teddy中央印製廠_台北股市分析器 "
+            f"<h2 style='margin:0; padding:0; line-height:1.25;'>"
+            f"Teddy中央印製廠_<br>台北股市分析器 "
             f"<span style='color:#ffd700;'>- 掙大錢 !</span></h2>",
             unsafe_allow_html=True,
         )
@@ -105,22 +106,26 @@ def render_index_header():
             color = "#e55353" if chg > 0 else "#3dbd6e" if chg < 0 else "#aaa"
             arrow = "▲" if chg > 0 else "▼" if chg < 0 else "="
             parts.append(
-                f"<div style='display:inline-block; margin:0 8px; "
-                f"padding:4px 10px; border-left:2px solid {color};'>"
-                f"<span style='color:#aaa; font-size:11px;'>{q.label}</span><br>"
-                f"<span style='font-size:15px; font-weight:700; color:{color};'>"
-                f"{q.last:,.2f}</span>&nbsp;"
-                f"<span style='color:{color}; font-size:11px;'>"
-                f"{arrow} {chg:+.2f} ({pct:+.2f}%)</span>"
+                f"<div style='display:inline-block; margin:0 10px; "
+                f"padding:6px 12px; border-left:3px solid {color}; "
+                f"vertical-align:top;'>"
+                f"<div style='color:#ccc; font-size:13px; font-weight:500;'>"
+                f"{q.label}</div>"
+                f"<div style='font-size:22px; font-weight:800; color:{color}; "
+                f"line-height:1.2; letter-spacing:-0.3px;'>"
+                f"{q.last:,.2f}</div>"
+                f"<div style='color:{color}; font-size:13px; font-weight:600;'>"
+                f"{arrow} {chg:+.2f} ({pct:+.2f}%)</div>"
                 f"</div>"
             )
         parts.append(
-            f"<div style='display:inline-block; color:#666; "
-            f"font-size:10px; margin-left:4px; vertical-align:bottom;'>"
+            f"<div style='display:inline-block; color:#777; "
+            f"font-size:12px; margin-left:6px; vertical-align:bottom;'>"
             f"⏱ {upd}</div>"
         )
         st.markdown(
-            f"<div style='text-align:right; padding-top:2px;'>"
+            f"<div style='text-align:right; padding-top:0; "
+            f"white-space:nowrap; overflow-x:auto;'>"
             f"{''.join(parts)}</div>",
             unsafe_allow_html=True,
         )
