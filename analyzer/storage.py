@@ -23,8 +23,12 @@ logger = logging.getLogger("storage")
 GITHUB_API = "https://api.github.com"
 
 
-def _cfg() -> dict | None:
-    """讀取 Streamlit secrets；未設定則回傳 None."""
+def _cfg(db_path: str | None = None) -> dict | None:
+    """讀取 Streamlit secrets；未設定則回傳 None.
+
+    db_path: 指定要同步的檔案路徑（相對 repo 根目錄）.
+             預設取 secrets 的 db_path，通常是 data/etf.db.
+    """
     try:
         import streamlit as st
         if "github" not in st.secrets:
@@ -35,7 +39,7 @@ def _cfg() -> dict | None:
             "owner": g.get("owner"),
             "repo": g.get("repo"),
             "branch": g.get("branch", "main"),
-            "db_path": g.get("db_path", "data/etf.db"),
+            "db_path": db_path or g.get("db_path", "data/etf.db"),
         }
     except Exception:
         return None
@@ -44,6 +48,11 @@ def _cfg() -> dict | None:
 def is_configured() -> bool:
     c = _cfg()
     return bool(c and c.get("token") and c.get("owner") and c.get("repo"))
+
+
+def _cfg_for(repo_path: str) -> dict | None:
+    """Get config for a specific file path in the repo."""
+    return _cfg(db_path=repo_path)
 
 
 def _headers(token: str) -> dict:
@@ -71,9 +80,10 @@ def _get_sha(c: dict) -> str | None:
     return None
 
 
-def download_db(local_path: Path) -> tuple[bool, str]:
+def download_db(local_path: Path,
+                repo_path: str | None = None) -> tuple[bool, str]:
     """從 GitHub 下載 DB 檔至 local_path. Return (success, message)."""
-    c = _cfg()
+    c = _cfg_for(repo_path) if repo_path else _cfg()
     if not is_configured():
         return False, "GitHub 持久化未設定"
     try:
@@ -97,9 +107,10 @@ def download_db(local_path: Path) -> tuple[bool, str]:
 
 
 def upload_db(local_path: Path,
-              message: str = "auto: update etf.db") -> tuple[bool, str]:
+              message: str = "auto: update etf.db",
+              repo_path: str | None = None) -> tuple[bool, str]:
     """上傳 DB 至 GitHub (覆蓋)."""
-    c = _cfg()
+    c = _cfg_for(repo_path) if repo_path else _cfg()
     if not is_configured():
         return False, "GitHub 持久化未設定"
     if not local_path.exists():

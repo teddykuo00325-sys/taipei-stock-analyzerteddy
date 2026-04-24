@@ -1,0 +1,372 @@
+"""K 線 OHLCV 增量快取 — SQLite + 增量抓取.
+
+設計：
+  1. 每支股票（含 ETF）首次查詢 → 抓 2 年 → 存 SQLite
+  2. 之後查詢 → 讀 SQLite，僅對「最後儲存日 → 今日」區間再抓一次
+  3. bulk_prepare() 供選股器批次預熱快取（首次跑全市場一次抓完）
+
+對外 API：
+  get(code, period='1y')       — 單股取 DataFrame（小寫欄位）
+  bulk_prepare(codes, ...)     — 批次預熱 / 增量更新
+  clear(code)                  — 清除該股快取
+  stats()                      — 快取統計（行數 / DB 大小）
+"""
+from __future__ import annotations
+
+import logging
+import sqlite3
+from datetime import date, datetime, timedelta
+from pathlib import Path
+from threading import Lock
+from typing import Callable, Iterable
+
+import pandas as pd
+import yfinance as yf
+
+logging.getLogger("yfinance").setLevel(logging.CRITICAL)
+
+DB_PATH = Path(__file__).parent.parent / "data" / "ohlcv.db"
+DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+_lock = Lock()
+
+# 期間 → 回溯天數
+PERIOD_DAYS = {
+    "5d": 5, "1mo": 30, "3mo": 90, "6mo": 180,
+    "1y": 365, "2y": 730, "5y": 1825, "max": 5000,
+}
+
+
+# ---------------------------------------------------------------
+# DB 初始化
+# ---------------------------------------------------------------
+def _conn() -> sqlite3.Connection:
+    c = sqlite3.connect(DB_PATH)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS ohlcv (
+            code TEXT,
+            date TEXT,
+            open REAL, high REAL, low REAL, close REAL, volume REAL,
+            PRIMARY KEY (code, date)
+        )
+    """)
+    c.execute(
+        "CREATE INDEX IF NOT EXISTS idx_code_date ON ohlcv(code, date)"
+    )
+    return c
+
+
+def _normalize(code: str) -> str:
+    code = str(code).strip().upper()
+    if code.endswith(".TW") or code.endswith(".TWO"):
+        return code
+    return f"{code}.TW"
+
+
+def _bare(code: str) -> str:
+    """Ticker → bare code (remove .TW/.TWO)."""
+    c = str(code).strip().upper()
+    if c.endswith(".TW"):
+        return c[:-3]
+    if c.endswith(".TWO"):
+        return c[:-4]
+    return c
+
+
+# ---------------------------------------------------------------
+# 讀寫 DB
+# ---------------------------------------------------------------
+def latest_date(code: str) -> str | None:
+    code = _bare(code)
+    with _lock, _conn() as c:
+        row = c.execute(
+            "SELECT MAX(date) FROM ohlcv WHERE code=?", (code,)
+        ).fetchone()
+    return row[0] if row and row[0] else None
+
+
+def _latest_dates_bulk(codes: list[str]) -> dict[str, str | None]:
+    codes_bare = [_bare(c) for c in codes]
+    if not codes_bare:
+        return {}
+    placeholders = ",".join("?" * len(codes_bare))
+    with _lock, _conn() as c:
+        rows = c.execute(
+            f"SELECT code, MAX(date) FROM ohlcv WHERE code IN ({placeholders}) "
+            "GROUP BY code",
+            codes_bare,
+        ).fetchall()
+    result = {r[0]: r[1] for r in rows}
+    # 未在 DB 的 code 標示為 None
+    return {c: result.get(c) for c in codes_bare}
+
+
+def _store(code: str, df: pd.DataFrame) -> int:
+    """Insert OHLCV rows, skip duplicates.
+
+    df expected columns: Open/High/Low/Close/Volume OR open/high/low/close/volume
+    Index: DatetimeIndex
+    """
+    if df is None or df.empty:
+        return 0
+    code = _bare(code)
+    # normalize columns
+    col_map = {}
+    for want, candidates in [
+        ("open", ["Open", "open"]),
+        ("high", ["High", "high"]),
+        ("low", ["Low", "low"]),
+        ("close", ["Close", "close"]),
+        ("volume", ["Volume", "volume"]),
+    ]:
+        for c in candidates:
+            if c in df.columns:
+                col_map[want] = c
+                break
+    if len(col_map) < 5:
+        return 0
+
+    rows = []
+    for dt, r in df.iterrows():
+        try:
+            date_str = (dt.strftime("%Y-%m-%d") if hasattr(dt, "strftime")
+                        else str(pd.Timestamp(dt).date()))
+            rows.append((
+                code, date_str,
+                float(r[col_map["open"]]),
+                float(r[col_map["high"]]),
+                float(r[col_map["low"]]),
+                float(r[col_map["close"]]),
+                float(r[col_map["volume"]]),
+            ))
+        except Exception:
+            continue
+
+    if not rows:
+        return 0
+    with _lock, _conn() as c:
+        c.executemany(
+            "INSERT OR REPLACE INTO ohlcv VALUES (?,?,?,?,?,?,?)",
+            rows,
+        )
+    return len(rows)
+
+
+def _load(code: str, start: str | None = None,
+          end: str | None = None) -> pd.DataFrame:
+    code = _bare(code)
+    q = ("SELECT date, open, high, low, close, volume "
+         "FROM ohlcv WHERE code=?")
+    params: list = [code]
+    if start:
+        q += " AND date >= ?"
+        params.append(start)
+    if end:
+        q += " AND date <= ?"
+        params.append(end)
+    q += " ORDER BY date"
+    with _lock, _conn() as c:
+        df = pd.read_sql_query(q, c, params=params)
+    if df.empty:
+        return df
+    df["date"] = pd.to_datetime(df["date"])
+    df.set_index("date", inplace=True)
+    return df
+
+
+# ---------------------------------------------------------------
+# yfinance 抓取 helpers
+# ---------------------------------------------------------------
+def _yf_download(tickers, **kwargs) -> pd.DataFrame:
+    """Wrapper with defensive defaults."""
+    kwargs.setdefault("interval", "1d")
+    kwargs.setdefault("auto_adjust", False)
+    kwargs.setdefault("progress", False)
+    kwargs.setdefault("threads", True)
+    try:
+        return yf.download(tickers, **kwargs)
+    except Exception:
+        return pd.DataFrame()
+
+
+def _fetch_single_full(code: str, period: str = "2y") -> pd.DataFrame:
+    """Single code full fetch（含 .TWO fallback）."""
+    for suffix in (".TW", ".TWO"):
+        ticker = _bare(code) + suffix
+        df = _yf_download(ticker, period=period)
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        if not df.empty:
+            return df
+    return pd.DataFrame()
+
+
+def _fetch_single_since(code: str, start: str) -> pd.DataFrame:
+    for suffix in (".TW", ".TWO"):
+        ticker = _bare(code) + suffix
+        df = _yf_download(ticker, start=start)
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        if not df.empty:
+            return df
+    return pd.DataFrame()
+
+
+# ---------------------------------------------------------------
+# 主 API
+# ---------------------------------------------------------------
+def get(code: str, period: str = "1y",
+        warm_period: str = "2y") -> pd.DataFrame:
+    """取得股票 K 線（小寫欄位）；增量快取."""
+    bare = _bare(code)
+    today = date.today()
+    latest = latest_date(bare)
+
+    if latest is None:
+        # 首次：全量抓 warm_period 存入
+        df = _fetch_single_full(bare, period=warm_period)
+        if df.empty:
+            raise ValueError(f"查無資料：{code}")
+        _store(bare, df)
+    else:
+        latest_dt = datetime.strptime(latest, "%Y-%m-%d").date()
+        if latest_dt < today:
+            start = (latest_dt + timedelta(days=1)).isoformat()
+            new_df = _fetch_single_since(bare, start)
+            if not new_df.empty:
+                _store(bare, new_df)
+
+    # 依 period 決定回溯天數
+    days = PERIOD_DAYS.get(period, 365)
+    want_start = (today - timedelta(days=days + 30)).isoformat()
+    return _load(bare, start=want_start)
+
+
+def bulk_prepare(codes: Iterable[str],
+                 warm_period: str = "2y",
+                 chunk_size: int = 40,
+                 progress_cb: Callable | None = None) -> dict:
+    """批次預熱 / 增量更新快取.
+
+    - 未在 DB 的股票 → 批次抓 warm_period
+    - DB 有資料但非今日 → 批次抓增量（自 min(latest_date)+1）
+    - DB 已是今日 → 略過
+
+    回傳 {'warmed': N, 'updated': N, 'skipped': N}
+    """
+    codes = [_bare(c) for c in codes]
+    today = date.today()
+    latest_map = _latest_dates_bulk(codes)
+    today_iso = today.isoformat()
+
+    need_full = [c for c, d in latest_map.items() if d is None]
+    need_incr = [c for c, d in latest_map.items()
+                 if d is not None and d < today_iso]
+    fresh = [c for c, d in latest_map.items() if d == today_iso]
+
+    result = {"warmed": 0, "updated": 0, "skipped": len(fresh),
+              "failed": []}
+
+    # ----- 首次批次抓 -----
+    if need_full:
+        tickers = [f"{c}.TW" for c in need_full]
+        for i in range(0, len(tickers), chunk_size):
+            chunk_t = tickers[i:i + chunk_size]
+            chunk_c = need_full[i:i + chunk_size]
+            if progress_cb:
+                progress_cb(i / max(len(tickers), 1),
+                            f"[首次] 下載 {i + 1}-"
+                            f"{min(i + chunk_size, len(tickers))} "
+                            f"/ {len(tickers)}")
+            data = _yf_download(chunk_t, period=warm_period,
+                                group_by="ticker")
+            if data is None or data.empty:
+                result["failed"].extend(chunk_c)
+                continue
+            for code, ticker in zip(chunk_c, chunk_t):
+                try:
+                    if len(chunk_t) == 1:
+                        df = data
+                    else:
+                        if ticker in data.columns.get_level_values(0):
+                            df = data[ticker]
+                        else:
+                            result["failed"].append(code)
+                            continue
+                    df = df.dropna(how="all")
+                    if df.empty:
+                        result["failed"].append(code)
+                        continue
+                    n = _store(code, df)
+                    if n > 0:
+                        result["warmed"] += 1
+                except Exception:
+                    result["failed"].append(code)
+
+    # ----- 增量抓（自最早一筆 latest_date 之後）-----
+    if need_incr:
+        # 找最早的 latest_date，批次抓自該日之後
+        earliest_latest = min(latest_map[c] for c in need_incr)
+        incr_start_dt = (datetime.strptime(earliest_latest, "%Y-%m-%d").date()
+                         + timedelta(days=1))
+        incr_start = incr_start_dt.isoformat()
+
+        tickers = [f"{c}.TW" for c in need_incr]
+        for i in range(0, len(tickers), chunk_size):
+            chunk_t = tickers[i:i + chunk_size]
+            chunk_c = need_incr[i:i + chunk_size]
+            if progress_cb:
+                progress_cb(i / max(len(tickers), 1),
+                            f"[增量] 自 {incr_start} 更新 "
+                            f"{i + 1}-{min(i + chunk_size, len(tickers))} "
+                            f"/ {len(tickers)}")
+            data = _yf_download(chunk_t, start=incr_start,
+                                group_by="ticker")
+            if data is None or data.empty:
+                continue
+            for code, ticker in zip(chunk_c, chunk_t):
+                try:
+                    if len(chunk_t) == 1:
+                        df = data
+                    else:
+                        if ticker in data.columns.get_level_values(0):
+                            df = data[ticker]
+                        else:
+                            continue
+                    df = df.dropna(how="all")
+                    if df.empty:
+                        continue
+                    # 只儲存比 latest_map[code] 新的日期
+                    own_latest = latest_map[code]
+                    df_filtered = df[df.index > pd.Timestamp(own_latest)]
+                    n = _store(code, df_filtered)
+                    if n > 0:
+                        result["updated"] += 1
+                except Exception:
+                    pass
+
+    if progress_cb:
+        progress_cb(1.0, f"快取準備完成：首次 {result['warmed']} 檔 / "
+                    f"增量 {result['updated']} 檔 / "
+                    f"已是今日 {result['skipped']} 檔 / "
+                    f"失敗 {len(result['failed'])} 檔")
+    return result
+
+
+def clear(code: str) -> None:
+    bare = _bare(code)
+    with _lock, _conn() as c:
+        c.execute("DELETE FROM ohlcv WHERE code=?", (bare,))
+
+
+def stats() -> dict:
+    with _lock, _conn() as c:
+        total_rows = c.execute("SELECT COUNT(*) FROM ohlcv").fetchone()[0]
+        distinct = c.execute("SELECT COUNT(DISTINCT code) FROM ohlcv").fetchone()[0]
+        min_max = c.execute(
+            "SELECT MIN(date), MAX(date) FROM ohlcv").fetchone()
+    size_kb = DB_PATH.stat().st_size / 1024 if DB_PATH.exists() else 0
+    return {
+        "rows": total_rows, "codes": distinct,
+        "date_range": (min_max[0], min_max[1]) if min_max else (None, None),
+        "db_size_kb": round(size_kb, 1),
+    }

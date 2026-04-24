@@ -16,7 +16,8 @@ from typing import Callable
 import pandas as pd
 import yfinance as yf
 
-from . import candlestick, diagnosis, indicators, institutional, margin, universe
+from . import (candlestick, diagnosis, indicators, institutional,
+               margin, price_cache, universe)
 
 
 def _rename(df: pd.DataFrame) -> pd.DataFrame:
@@ -98,6 +99,17 @@ def _fetch_batch(tickers: list[str], period: str) -> pd.DataFrame | None:
         return None
 
 
+def _load_from_cache(code: str, period: str) -> pd.DataFrame | None:
+    """從 price_cache 讀取（欄位已是小寫）."""
+    try:
+        df = price_cache.get(code, period=period)
+        if df.empty:
+            return None
+        return df
+    except Exception:
+        return None
+
+
 def screen(
     min_avg_volume_lots: int = 1000,
     top_n: int = 20,
@@ -128,35 +140,35 @@ def screen(
 
     codes = snap["Code"].tolist()
     names = dict(zip(snap["Code"], snap["Name"]))
-    tickers = [f"{c}.TW" for c in codes]
-    total = len(tickers)
+    total = len(codes)
 
-    results: list[dict] = []
-    if progress_cb:
-        progress_cb(0.02, f"準備掃描 {total} 檔（今日成交 > {pre_filter_lots_today} 張）…")
-
-    for i in range(0, total, chunk_size):
-        chunk_t = tickers[i:i + chunk_size]
-        chunk_c = codes[i:i + chunk_size]
+    # ===== 步驟 1：預熱 / 增量更新 price_cache (60% 進度) =====
+    def _warm_cb(pct, msg):
         if progress_cb:
-            progress_cb(min(0.99, 0.02 + (i / max(total, 1)) * 0.97),
-                        f"下載 & 分析 {i + 1}-{min(i + chunk_size, total)} / {total}…")
-        data = _fetch_batch(chunk_t, period)
-        if data is None or data.empty:
+            progress_cb(0.02 + pct * 0.60, msg)
+
+    price_cache.bulk_prepare(
+        codes, warm_period="2y",
+        chunk_size=chunk_size, progress_cb=_warm_cb,
+    )
+
+    # ===== 步驟 2：自快取讀取並評分（37% 進度）=====
+    results: list[dict] = []
+    for i, code in enumerate(codes):
+        if progress_cb and (i % 20 == 0):
+            progress_cb(0.62 + (i / max(total, 1)) * 0.37,
+                        f"分析 {i + 1} / {total}…")
+        df = _load_from_cache(code, period)
+        if df is None:
             continue
-        for code, ticker in zip(chunk_c, chunk_t):
-            try:
-                if len(chunk_t) == 1:
-                    df = data
-                else:
-                    df = data[ticker] if ticker in data.columns.get_level_values(0) else None
-                if df is None or df.empty:
-                    continue
-                row = _score_one(code, names.get(code, code), df, min_avg_volume_lots)
-                if row:
-                    results.append(row)
-            except Exception:
-                continue
+        df_upper = df.rename(columns={
+            "open": "Open", "high": "High", "low": "Low",
+            "close": "Close", "volume": "Volume",
+        })
+        row = _score_one(code, names.get(code, code),
+                         df_upper, min_avg_volume_lots)
+        if row:
+            results.append(row)
 
     if progress_cb:
         progress_cb(1.0, f"分析完成，{len(results)} 檔通過均量篩選")
