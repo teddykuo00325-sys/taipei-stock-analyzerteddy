@@ -11,6 +11,7 @@ import pandas as pd
 from . import http
 
 TWSE_COMPANY_API = "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+TPEX_COMPANY_API = "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O"
 
 # TWSE 產業別代碼 → 中文
 CODE_MAP: dict[str, str] = {
@@ -37,22 +38,53 @@ _cache: dict = {"time": 0.0, "df": None}
 
 
 def _fetch_raw() -> pd.DataFrame:
-    r = http.get(TWSE_COMPANY_API, timeout=20)
-    r.raise_for_status()
-    data = r.json()
-    df = pd.DataFrame(data)
-    # 標準化欄位
-    keep = {
+    """TWSE 上市 + TPEX 上櫃公司基本資料合併."""
+    # TWSE 上市
+    try:
+        r = http.get(TWSE_COMPANY_API, timeout=20)
+        r.raise_for_status()
+        tse_data = r.json()
+    except Exception:
+        tse_data = []
+    df_tse = pd.DataFrame(tse_data)
+    keep_tse = {
         "公司代號": "code",
         "公司簡稱": "short_name",
         "公司名稱": "full_name",
         "產業別": "ind_code",
         "英文簡稱": "name_en",
     }
-    for k in keep:
-        if k not in df.columns:
-            df[k] = ""
-    df = df.rename(columns=keep)[list(keep.values())]
+    for k in keep_tse:
+        if k not in df_tse.columns:
+            df_tse[k] = ""
+    df_tse = df_tse.rename(columns=keep_tse)[list(keep_tse.values())]
+    df_tse["market"] = "TSE"
+
+    # TPEX 上櫃
+    try:
+        r = http.get(TPEX_COMPANY_API, timeout=20)
+        r.raise_for_status()
+        otc_data = r.json()
+    except Exception:
+        otc_data = []
+    df_otc = pd.DataFrame(otc_data)
+    if not df_otc.empty:
+        keep_otc = {
+            "SecuritiesCompanyCode": "code",
+            "CompanyAbbreviation": "short_name",
+            "CompanyName": "full_name",
+            "SecuritiesIndustryCode": "ind_code",
+            "Symbol": "name_en",
+        }
+        for k in keep_otc:
+            if k not in df_otc.columns:
+                df_otc[k] = ""
+        df_otc = df_otc.rename(columns=keep_otc)[list(keep_otc.values())]
+        df_otc["market"] = "OTC"
+        df = pd.concat([df_tse, df_otc], ignore_index=True)
+    else:
+        df = df_tse
+
     df["code"] = df["code"].astype(str).str.strip()
     df["ind_code"] = df["ind_code"].astype(str).str.zfill(2)
     df["industry"] = df["ind_code"].map(lambda c: CODE_MAP.get(c, f"其他({c})"))
@@ -87,6 +119,7 @@ def info_for(code: str) -> dict | None:
                 "ind_code": r["ind_code"],
                 "industry": r["industry"],
                 "name_en": r["name_en"],
+                "market": r.get("market", ""),
             }
     # ETF / 未列入上市公司基本資料 fallback
     if c[:2] in ("00",) or (c.endswith("A") and c.startswith("0")):

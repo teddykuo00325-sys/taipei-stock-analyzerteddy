@@ -9,6 +9,7 @@ import pandas as pd
 from . import http
 
 TWSE_STOCK_DAY_ALL = "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"
+TPEX_DAILY_URL = "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes"
 
 _NUMERIC_COLS = [
     "OpeningPrice", "HighestPrice", "LowestPrice", "ClosingPrice",
@@ -22,10 +23,38 @@ def _fetch_twse_raw() -> list[dict]:
     return r.json()
 
 
+def _fetch_tpex_raw() -> list[dict]:
+    r = http.get(TPEX_DAILY_URL, timeout=20)
+    r.raise_for_status()
+    return r.json()
+
+
 def fetch_twse_snapshot() -> pd.DataFrame:
-    """取得 TWSE 所有上市股票的最新交易日快照（僅 4 碼一般股票）."""
+    """TWSE 上市 + TPEX 上櫃合併快照."""
     rows = _fetch_twse_raw()
-    df = pd.DataFrame(rows)
+    df_twse = pd.DataFrame(rows)
+    df_twse["Market"] = "TSE"
+
+    # TPEX 上櫃：欄位名不同，映射成 TWSE 相容格式
+    try:
+        tpex_rows = _fetch_tpex_raw()
+        df_tpex = pd.DataFrame(tpex_rows).rename(columns={
+            "SecuritiesCompanyCode": "Code",
+            "CompanyName": "Name",
+            "Open": "OpeningPrice",
+            "High": "HighestPrice",
+            "Low": "LowestPrice",
+            "Close": "ClosingPrice",
+            "TradingShares": "TradeVolume",
+            "TransactionAmount": "TradeValue",
+            "TransactionNumber": "Transaction",
+        })
+        df_tpex["Market"] = "OTC"
+        # TPEX Change 可能帶 +/- 符號字串
+        df = pd.concat([df_twse, df_tpex], ignore_index=True, sort=False)
+    except Exception:
+        df = df_twse
+
     for c in _NUMERIC_COLS:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")

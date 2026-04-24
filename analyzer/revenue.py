@@ -16,6 +16,7 @@ import pandas as pd
 from . import http
 
 URL = "https://openapi.twse.com.tw/v1/opendata/t187ap05_L"
+URL_OTC = "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap05_O"
 
 
 @dataclass
@@ -34,11 +35,7 @@ _cache: dict = {"t": 0.0, "df": None}
 
 
 def _fetch_raw() -> pd.DataFrame:
-    r = http.get(URL, timeout=20)
-    r.raise_for_status()
-    data = r.json()
-    df = pd.DataFrame(data)
-    # 標準化欄位名稱
+    """上市 + 上櫃合併月營收資料."""
     rename = {
         "公司代號": "code", "公司名稱": "name", "資料年月": "ym",
         "營業收入-當月營收": "rev",
@@ -47,10 +44,22 @@ def _fetch_raw() -> pd.DataFrame:
         "累計營業收入-當月累計營收": "ytd_rev",
         "累計營業收入-前期比較增減(%)": "ytd_yoy",
     }
-    for k in rename:
-        if k not in df.columns:
-            df[k] = None
-    df = df.rename(columns=rename)[list(rename.values())]
+    frames: list[pd.DataFrame] = []
+    for src_url in (URL, URL_OTC):
+        try:
+            r = http.get(src_url, timeout=20)
+            r.raise_for_status()
+            d = pd.DataFrame(r.json())
+            for k in rename:
+                if k not in d.columns:
+                    d[k] = None
+            d = d.rename(columns=rename)[list(rename.values())]
+            frames.append(d)
+        except Exception:
+            continue
+    if not frames:
+        return pd.DataFrame(columns=list(rename.values()))
+    df = pd.concat(frames, ignore_index=True)
     df["code"] = df["code"].astype(str).str.strip()
     for c in ("rev", "mom", "yoy", "ytd_rev", "ytd_yoy"):
         df[c] = pd.to_numeric(df[c], errors="coerce")
