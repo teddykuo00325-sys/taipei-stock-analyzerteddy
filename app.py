@@ -627,6 +627,8 @@ if mode == "🎯 今日選股":
                 if ok:
                     st.success(f"✅ {msg}")
                     st.rerun()
+                elif "not found" in msg.lower():
+                    st.info("ℹ️ GitHub 上尚無 K 線備份，請先按「☁️ 立即備份」上傳")
                 else:
                     st.warning(f"⚠️ {msg}")
             # Purge 按鈕：DB 太大時清舊資料
