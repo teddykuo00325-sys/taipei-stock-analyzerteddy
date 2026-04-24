@@ -272,7 +272,8 @@ if "_mode_override" in st.session_state:
 
 mode = st.sidebar.radio(
     "模式",
-    ["🎯 今日選股", "🔎 個股查詢", "⭐ 收藏清單", "📊 主動式ETF", "🔥 資金流向"],
+    ["🎯 今日選股", "🔎 個股查詢", "⭐ 收藏清單",
+     "📈 多股比較", "📊 主動式ETF", "🔥 資金流向"],
     key="app_mode",
     label_visibility="collapsed",
 )
@@ -502,6 +503,168 @@ if mode == "🎯 今日選股":
                          "風報比": "{:.2f}"}, na_rep="—")
             )
             st.dataframe(styled, use_container_width=True)
+
+
+# ============================================================
+# 📈 多股比較
+# ============================================================
+elif mode == "📈 多股比較":
+    st.title("📈 台北股市分析器")
+    st.caption("📈 多股比較　·　疊加 2~5 檔標的相對走勢與相關性分析")
+
+    st.sidebar.subheader("選取標的")
+    ind_df_cmp = industry.snapshot()
+    if ind_df_cmp.empty:
+        opts_cmp = ["2330 台積電"]
+    else:
+        opts_cmp = (ind_df_cmp["code"] + " "
+                    + ind_df_cmp["short_name"]).tolist()
+    default_picks = st.session_state.get("cmp_picks", ["2330 台積電"])
+    picked = st.sidebar.multiselect(
+        "股票（輸入關鍵字過濾，最多 5 檔）",
+        opts_cmp,
+        default=[p for p in default_picks if p in opts_cmp],
+        max_selections=5,
+    )
+    st.session_state.cmp_picks = picked
+    period_cmp = st.sidebar.selectbox(
+        "觀察期間", ["1 個月", "3 個月", "6 個月", "1 年", "2 年"],
+        index=2,
+    )
+    p_map = {"1 個月": "1mo", "3 個月": "3mo", "6 個月": "6mo",
+             "1 年": "1y", "2 年": "2y"}
+    render_market_sidebar()
+
+    if not picked:
+        st.info("👈 於左側選取 2~5 檔股票開始比較")
+        st.stop()
+
+    codes_cmp = [p.split()[0] for p in picked]
+    names_cmp = {p.split()[0]: " ".join(p.split()[1:]) for p in picked}
+
+    with st.spinner(f"抓取 {len(codes_cmp)} 檔資料中…"):
+        raws: dict[str, pd.DataFrame] = {}
+        for c in codes_cmp:
+            try:
+                d = data.fetch(c, period=p_map[period_cmp], interval="1d")
+                raws[c] = d
+            except Exception as e:
+                st.warning(f"{c} 抓取失敗：{e}")
+
+    if not raws:
+        st.error("無可用資料")
+        st.stop()
+
+    # 對齊索引（取交集日期）
+    common_index = None
+    for c, d in raws.items():
+        common_index = d.index if common_index is None \
+            else common_index.intersection(d.index)
+    aligned = {c: d.loc[common_index] for c, d in raws.items()}
+
+    # 計算相對漲幅（以起始日為 0%）
+    import plotly.graph_objects as _go2
+    fig_cmp = _go2.Figure()
+    palette = ["#d62728", "#ff7f0e", "#1f77b4", "#9467bd", "#2ca02c"]
+    perf_rows = []
+    for i, (c, d) in enumerate(aligned.items()):
+        if d.empty or len(d) < 2:
+            continue
+        base = d["Close"].iloc[0]
+        rel = (d["Close"] / base - 1) * 100
+        color = palette[i % len(palette)]
+        fig_cmp.add_trace(_go2.Scatter(
+            x=d.index, y=rel, name=f"{c} {names_cmp.get(c, '')}",
+            line=dict(color=color, width=2),
+            hovertemplate=(f"<b>{c} {names_cmp.get(c, '')}</b><br>"
+                           "%{x|%Y-%m-%d}<br>"
+                           "相對漲幅 %{y:.2f}%<extra></extra>"),
+        ))
+        ret_total = (d["Close"].iloc[-1] / base - 1) * 100
+        max_up = (d["Close"].max() / base - 1) * 100
+        max_dn = (d["Close"].min() / base - 1) * 100
+        daily_ret = d["Close"].pct_change().dropna()
+        vol_ann = daily_ret.std() * (252 ** 0.5) * 100
+        perf_rows.append({
+            "代號": c,
+            "名稱": names_cmp.get(c, ""),
+            "期間報酬 %": round(ret_total, 2),
+            "最大漲幅 %": round(max_up, 2),
+            "最大回檔 %": round(max_dn, 2),
+            "年化波動率 %": round(vol_ann, 1),
+            "最新收盤": round(float(d["Close"].iloc[-1]), 2),
+        })
+
+    fig_cmp.add_hline(y=0, line_dash="dot", line_color="#888", line_width=1)
+    fig_cmp.update_layout(
+        title=f"相對漲幅 · {period_cmp}起",
+        height=520,
+        margin=dict(l=10, r=10, t=50, b=10),
+        hovermode="x unified",
+        xaxis_title="", yaxis_title="相對漲幅 (%)",
+        legend=dict(orientation="h", y=1.08, x=0),
+        dragmode="pan",
+    )
+    fig_cmp.update_xaxes(
+        rangebreaks=[dict(bounds=["sat", "mon"])],
+        showspikes=True, spikemode="across", spikedash="dot",
+        spikecolor="#888", spikethickness=1,
+    )
+    fig_cmp.update_yaxes(
+        showspikes=True, spikemode="across", spikedash="dot",
+        spikecolor="#888", spikethickness=1,
+    )
+    st.plotly_chart(fig_cmp, use_container_width=True,
+                    config={"scrollZoom": True, "displaylogo": False})
+
+    # 績效表
+    st.markdown("#### 📊 績效比較")
+    perf_df = pd.DataFrame(perf_rows)
+
+    def _perf_color(v):
+        try:
+            x = float(v)
+        except Exception:
+            return ""
+        if x > 0:
+            return "color:#e55353;"
+        if x < 0:
+            return "color:#3dbd6e;"
+        return ""
+
+    styled_perf = (perf_df.style
+                   .map(_perf_color,
+                        subset=["期間報酬 %", "最大漲幅 %", "最大回檔 %"])
+                   .format({"期間報酬 %": "{:+.2f}",
+                            "最大漲幅 %": "{:+.2f}",
+                            "最大回檔 %": "{:+.2f}",
+                            "年化波動率 %": "{:.1f}",
+                            "最新收盤": "{:.2f}"}))
+    st.dataframe(styled_perf, use_container_width=True, hide_index=True)
+
+    # 相關性矩陣
+    if len(aligned) >= 2:
+        st.markdown("#### 🔗 日報酬相關性")
+        daily = pd.DataFrame({c: d["Close"].pct_change()
+                              for c, d in aligned.items()}).dropna()
+        if not daily.empty:
+            corr = daily.corr()
+            # 重新命名
+            corr.index = [f"{c} {names_cmp.get(c, '')}" for c in corr.index]
+            corr.columns = [f"{c} {names_cmp.get(c, '')}" for c in corr.columns]
+            # 用顏色 map 呈現
+            def _corr_color(v):
+                try:
+                    x = float(v)
+                except Exception:
+                    return ""
+                r = int(214 * x) if x > 0 else 0
+                g = int(160 * -x) if x < 0 else 0
+                return f"background-color: rgba({r},{g},0,{abs(x) * 0.5});"
+            st.dataframe(corr.style.map(_corr_color).format("{:.2f}"),
+                         use_container_width=True)
+            st.caption("🔑 相關係數 +1 完全同向、-1 反向、0 無關。"
+                       "同族群通常 > 0.7；避免集中持有高相關股可分散風險。")
 
 
 # ============================================================
@@ -1229,6 +1392,35 @@ else:
         st.warning(banner)
     st.caption(diag.summary)
 
+    # --- 雙觀點對照（朱家泓 vs 籌碼派） ---
+    try:
+        chip_diag = diagnosis.diagnose(df, code=code, weekly_df=weekly_df,
+                                       school="籌碼派")
+    except Exception:
+        chip_diag = None
+
+    if chip_diag:
+        v1, v2 = st.columns(2)
+        with v1:
+            st.markdown(
+                f"<div style='padding:8px 12px; border-left:3px solid #ff7f0e;'>"
+                f"<span style='color:#ff7f0e;'>📈 技術派觀點</span><br>"
+                f"<b>{diag.stance} · {diag.action}</b>　分數 {diag.score:+d}"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+        with v2:
+            st.markdown(
+                f"<div style='padding:8px 12px; border-left:3px solid #9467bd;'>"
+                f"<span style='color:#9467bd;'>💼 籌碼派觀點</span><br>"
+                f"<b>{chip_diag.stance} · {chip_diag.action}</b>　分數 {chip_diag.score:+d}"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+        # 若兩者觀點分歧，顯示提示
+        if (diag.stance in ("多方", "偏多")) != (chip_diag.stance in ("多方", "偏多")):
+            st.warning("⚠️ **兩派觀點分歧** — 建議檢視籌碼面與技術面不一致的原因（可能籌碼先行或技術落後）")
+
     # ---- 🎯 關鍵價位 ----
     st.markdown("#### 🎯 關鍵價位")
     col_t, col_e, col_s, col_r = st.columns(4)
@@ -1353,13 +1545,15 @@ else:
     # ============================================================
     # 📑 六大分頁：圖表 / 趨勢 / 訊號 / 價位 / 籌碼 / 量化
     # ============================================================
-    tab_chart, tab_trend, tab_signal, tab_level, tab_chip, tab_quant = st.tabs(
+    (tab_chart, tab_trend, tab_signal, tab_level,
+     tab_chip, tab_quant, tab_backtest) = st.tabs(
         ["📉 圖表",
          "📊 趨勢結構",
          "🚨 訊號 & 型態",
          "🎯 關鍵價位",
          "💼 籌碼面",
-         "🔬 量化指標"]
+         "🔬 量化指標",
+         "🧪 訊號回測"]
     )
 
     # ---- 📉 圖表 ----
@@ -1659,6 +1853,92 @@ else:
                                           "權重 %": "{:.2f}"}),
                 use_container_width=True, hide_index=True,
             )
+
+    # ---- 🧪 訊號回測 ----
+    with tab_backtest:
+        from analyzer import backtest as _bt
+        st.markdown("### 🧪 歷史訊號回測")
+        st.caption("掃描近一年所有訊號發生點，統計後續 5 / 10 / 20 / 60 日報酬率與勝率。"
+                   "勝率定義：多頭訊號看漲的比例、空頭訊號看跌的比例。")
+        with st.spinner("回測中…"):
+            events, summary_df = _bt.run(df)
+
+        if summary_df.empty:
+            st.info("資料不足以進行回測（需至少 60 日）")
+        else:
+            # 摘要指標
+            tot_bull = len([e for e in events if e.kind == "bull"])
+            tot_bear = len([e for e in events if e.kind == "bear"])
+            bt_cols = st.columns(3)
+            bt_cols[0].metric("多頭訊號總數", tot_bull)
+            bt_cols[1].metric("空頭訊號總數", tot_bear)
+            bt_cols[2].metric("觀察期間", f"{len(df)} 日")
+
+            # 摘要表
+            def _color_win(v):
+                try:
+                    x = float(v)
+                except Exception:
+                    return ""
+                if x >= 60:
+                    return "background-color: rgba(214,39,40,0.35);"
+                if x >= 50:
+                    return "background-color: rgba(214,39,40,0.15);"
+                if x <= 40:
+                    return "background-color: rgba(44,160,44,0.25);"
+                return ""
+
+            def _color_ret(v):
+                try:
+                    x = float(v)
+                except Exception:
+                    return ""
+                if x > 0:
+                    return "color:#e55353;"
+                if x < 0:
+                    return "color:#3dbd6e;"
+                return ""
+
+            win_cols = [c for c in summary_df.columns if "勝率" in c]
+            ret_cols = [c for c in summary_df.columns if "均報酬" in c]
+
+            styled_bt = (summary_df.style
+                         .map(_color_win, subset=win_cols)
+                         .map(_color_ret, subset=ret_cols)
+                         .format({c: "{:.1f}" for c in win_cols}, na_rep="—")
+                         .format({c: "{:+.2f}" for c in ret_cols}, na_rep="—"))
+            st.dataframe(styled_bt, use_container_width=True, hide_index=True)
+
+            st.caption("💡 **解讀**：勝率 > 60% 底色轉紅表示此訊號對**順向**勝率高；"
+                       "T+20 均報酬 > 0 代表多頭訊號後 20 日平均上漲。"
+                       "樣本數小於 5 次的訊號僅供參考。")
+
+            # 事件清單（展開）
+            with st.expander(f"📋 事件明細（共 {len(events)} 筆）", expanded=False):
+                ev_rows = []
+                for e in events:
+                    r5 = e.returns.get(5)
+                    r10 = e.returns.get(10)
+                    r20 = e.returns.get(20)
+                    ev_rows.append({
+                        "日期": str(e.date.date()),
+                        "訊號": e.name,
+                        "方向": {"bull": "🔴 多", "bear": "🟢 空",
+                                "neutral": "⚪ 中"}[e.kind],
+                        "價格": round(e.price, 2),
+                        "T+5%": round(r5, 2) if r5 is not None else None,
+                        "T+10%": round(r10, 2) if r10 is not None else None,
+                        "T+20%": round(r20, 2) if r20 is not None else None,
+                    })
+                ev_df = pd.DataFrame(ev_rows).sort_values(
+                    "日期", ascending=False).reset_index(drop=True)
+                st.dataframe(ev_df.style.map(
+                    _color_ret,
+                    subset=[c for c in ["T+5%", "T+10%", "T+20%"]
+                            if c in ev_df.columns])
+                    .format({"T+5%": "{:+.2f}", "T+10%": "{:+.2f}",
+                             "T+20%": "{:+.2f}"}, na_rep="—"),
+                    use_container_width=True, hide_index=True)
 
     # ---- 🔬 量化指標 ----
     with tab_quant:

@@ -8,10 +8,11 @@ from __future__ import annotations
 
 from types import ModuleType
 
-from . import chu_chia_hung
+from . import chip, chu_chia_hung
 
 REGISTRY: dict[str, ModuleType] = {
     chu_chia_hung.NAME: chu_chia_hung,
+    chip.NAME: chip,
 }
 
 DEFAULT = chu_chia_hung.NAME
