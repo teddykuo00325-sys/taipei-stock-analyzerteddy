@@ -300,40 +300,7 @@ def build(df: pd.DataFrame, title: str = "", patterns=None,
             row=1, col=1,
         )
 
-    # --- 右上角技術指標即時數值 ---
-    if len(df) > 0:
-        last_row = df.iloc[-1]
-        lines: list[str] = []
-        ma_parts = []
-        for p in (5, 10, 20, 60):
-            col = f"ma{p}"
-            if col in df.columns and not pd.isna(last_row.get(col)):
-                ma_parts.append(f"MA{p}={last_row[col]:.2f}")
-        if ma_parts:
-            lines.append(" · ".join(ma_parts))
-        kd_rsi = []
-        if "k" in df.columns and not pd.isna(last_row.get("k")):
-            kd_rsi.append(f"K={last_row['k']:.0f}")
-            kd_rsi.append(f"D={last_row['d']:.0f}")
-        if "rsi" in df.columns and not pd.isna(last_row.get("rsi")):
-            kd_rsi.append(f"RSI={last_row['rsi']:.1f}")
-        if "macd_dif" in df.columns and not pd.isna(last_row.get("macd_dif")):
-            kd_rsi.append(f"MACD={last_row['macd_dif']:.2f}")
-        if kd_rsi:
-            lines.append(" · ".join(kd_rsi))
-        if econ is not None:
-            lines.append(f"Hurst={econ.hurst:.2f} · "
-                         f"波動 {econ.vol_recent * 100:.0f}% (x{econ.vol_ratio:.2f})")
-        if lines:
-            fig.add_annotation(
-                xref="paper", yref="paper", x=0.99, y=0.99,
-                text="<br>".join(lines),
-                showarrow=False, align="right",
-                font=dict(size=10, color="#ddd"),
-                bgcolor="rgba(20,24,35,0.88)",
-                bordercolor="rgba(255,255,255,0.25)", borderwidth=0.8,
-                borderpad=5, xanchor="right", yanchor="top",
-            )
+    # 註：技術指標數值改由 app.py 以 pills 顯示在圖表上方，不再占用圖內空間
 
     # --- 成交量 ---
     vol_color = [

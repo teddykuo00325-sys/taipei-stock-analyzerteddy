@@ -8,28 +8,62 @@ import logging
 
 from analyzer import (chart, data, diagnosis, etf, etf_scraper,
                       indicators, industry, live, marketdata,
-                      moneyflow, schools, screener, storage)
+                      moneyflow, schools, screener, storage, watchlist)
 
 logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 
 st.set_page_config(page_title="台北股市分析器", page_icon="📈", layout="wide")
 
-# === 加寬側邊欄 ===
+# === 側邊欄寬度 + 手機版響應式 ===
 st.markdown("""
 <style>
-[data-testid="stSidebar"] {
-    min-width: 340px !important;
-    max-width: 420px !important;
-    width: 360px !important;
-}
-[data-testid="stSidebar"] > div:first-child {
-    width: 360px !important;
+/* 桌面版側邊欄 */
+@media (min-width: 769px) {
+    [data-testid="stSidebar"] {
+        min-width: 340px !important;
+        max-width: 420px !important;
+        width: 360px !important;
+    }
+    [data-testid="stSidebar"] > div:first-child {
+        width: 360px !important;
+    }
 }
 [data-testid="stSidebar"] .stMetric [data-testid="stMetricLabel"] {
     font-size: 13px !important;
 }
 [data-testid="stSidebar"] .stMetric [data-testid="stMetricValue"] {
     font-size: 18px !important;
+}
+
+/* 手機版：768px 以下 */
+@media (max-width: 768px) {
+    .main .block-container {
+        padding: 0.5rem 0.6rem !important;
+    }
+    /* 卡片內現價縮小一點 */
+    div[data-testid="stVerticalBlockBorderWrapper"] span[style*="font-size:30px"] {
+        font-size: 24px !important;
+    }
+    /* 標題列縮小 */
+    h1 { font-size: 1.4rem !important; }
+    h2 { font-size: 1.2rem !important; }
+    h3 { font-size: 1.05rem !important; }
+    /* metric 壓縮 */
+    [data-testid="stMetricValue"] {
+        font-size: 1rem !important;
+    }
+    [data-testid="stMetricLabel"] {
+        font-size: 0.75rem !important;
+    }
+    /* pills 縮小間距 */
+    span[style*="border-radius:12px"] {
+        font-size: 11px !important;
+    }
+}
+
+/* 統一 expander 標題字型 */
+[data-testid="stExpander"] summary p {
+    font-size: 0.95rem !important;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -164,7 +198,7 @@ def render_card(row: pd.Series, rank: int):
             """
             st.markdown(info_html, unsafe_allow_html=True)
 
-        pa = st.columns([2, 2, 2, 2, 2])
+        pa = st.columns([2, 2, 2, 2, 1.5, 1.5])
         if d.target_price:
             pa[0].metric("目標價", f"{d.target_price:.2f}",
                          f"{(d.target_price / row['收盤'] - 1) * 100:+.1f}%")
@@ -182,9 +216,21 @@ def render_card(row: pd.Series, rank: int):
         pa[3].metric("日均量", f"{row['日均量(張)']:,} 張")
         with pa[4]:
             st.write("")  # 對齊 metric 高度
-            if st.button("🔎 完整分析", key=f"detail_{rank}_{row['代號']}",
-                         use_container_width=True, type="primary"):
-                # 透過 _mode_override 延遲到下一輪 rerun 前套用
+            watched = watchlist.contains(str(row["代號"]))
+            if st.button("🌟" if watched else "⭐",
+                         key=f"fav_{rank}_{row['代號']}",
+                         use_container_width=True,
+                         help="移除收藏" if watched else "加入收藏"):
+                if watched:
+                    watchlist.remove(str(row["代號"]))
+                else:
+                    watchlist.add(str(row["代號"]))
+                st.rerun()
+        with pa[5]:
+            st.write("")
+            if st.button("🔎", key=f"detail_{rank}_{row['代號']}",
+                         use_container_width=True, type="primary",
+                         help="完整分析"):
                 st.session_state._mode_override = "🔎 個股查詢"
                 st.session_state.stock_code = str(row["代號"])
                 st.session_state.auto_analyze = True
@@ -226,7 +272,7 @@ if "_mode_override" in st.session_state:
 
 mode = st.sidebar.radio(
     "模式",
-    ["🎯 今日選股", "🔎 個股查詢", "📊 主動式ETF", "🔥 資金流向"],
+    ["🎯 今日選股", "🔎 個股查詢", "⭐ 收藏清單", "📊 主動式ETF", "🔥 資金流向"],
     key="app_mode",
     label_visibility="collapsed",
 )
@@ -456,6 +502,201 @@ if mode == "🎯 今日選股":
                          "風報比": "{:.2f}"}, na_rep="—")
             )
             st.dataframe(styled, use_container_width=True)
+
+
+# ============================================================
+# ⭐ 收藏清單
+# ============================================================
+elif mode == "⭐ 收藏清單":
+    st.title("📈 台北股市分析器")
+    st.caption("⭐ 收藏清單　·　追蹤常看股票、即時進場區警示")
+
+    codes = watchlist.get()
+
+    # 側邊欄：新增股票 + 清單管理
+    st.sidebar.subheader("管理收藏")
+    add_sel = st.sidebar.selectbox(
+        "新增", [""] + _stock_options() if False
+        else [""] + (industry.snapshot()["code"] + " "
+                     + industry.snapshot()["short_name"]).tolist()
+        if not industry.snapshot().empty else [""],
+        index=0, key="wl_add",
+    )
+    if add_sel:
+        add_code = add_sel.split()[0]
+        if st.sidebar.button(f"➕ 加入 {add_code}", use_container_width=True):
+            watchlist.add(add_code)
+            st.rerun()
+
+    if codes:
+        if st.sidebar.button("🗑️ 清空全部", use_container_width=True):
+            watchlist.set_all([])
+            st.rerun()
+    render_market_sidebar()
+
+    if not codes:
+        st.info("📝 清單目前是空的。\n\n"
+                "➕ 可於「🔎 個股查詢」頁面按 ⭐ 加入收藏，或使用上方側邊欄新增。\n\n"
+                "📌 收藏清單透過 URL 參數同步：複製瀏覽器網址即可分享或書籤保存。")
+        st.stop()
+
+    # 取得產業對照 + 即時報價
+    ind_df = industry.snapshot()
+    with st.spinner(f"抓取 {len(codes)} 檔即時報價 + 計算指標…"):
+        quotes = live.quotes(codes)
+
+    # 分類：進場區 / 非進場區
+    in_zone: list[dict] = []
+    other: list[dict] = []
+
+    progress = st.progress(0.0)
+    for idx, code in enumerate(codes):
+        progress.progress((idx + 1) / len(codes), text=f"分析 {code}…")
+        try:
+            raw = data.fetch(code, period="1y", interval="1d")
+            raw = indicators.add_all(raw)
+            q = quotes.get(code)
+            if q:
+                raw = live.overlay_today(raw, q)
+            d = diagnosis.diagnose(raw, code=code)
+            info = ind_df[ind_df["code"] == code]
+            name = info.iloc[0]["short_name"] if not info.empty else code
+            ind_name = info.iloc[0]["industry"] if not info.empty else "—"
+            price_now = float(raw["close"].iloc[-1])
+            chg_pct = ((price_now / raw["close"].iloc[-2] - 1) * 100
+                       if len(raw) >= 2 else 0.0)
+
+            in_entry = False
+            if d.entry_zone:
+                lo, hi = d.entry_zone
+                if lo <= price_now <= hi:
+                    in_entry = True
+
+            bucket = {
+                "code": code, "name": name, "industry": ind_name,
+                "price": price_now, "chg_pct": chg_pct,
+                "score": d.score, "stance": d.stance, "action": d.action,
+                "entry_zone": d.entry_zone,
+                "target": d.target_price, "stop": d.short_stop,
+                "in_zone": in_entry, "diag": d,
+            }
+            (in_zone if in_entry else other).append(bucket)
+        except Exception as e:
+            other.append({"code": code, "name": code, "error": str(e)})
+    progress.empty()
+
+    # ---- 警示區：觸發進場的股票 ----
+    if in_zone:
+        st.success(f"🚨 **{len(in_zone)} 檔已達建議進場區間** — 可考慮佈局")
+        for b in in_zone:
+            lo, hi = b["entry_zone"]
+            st.markdown(
+                f"""
+                <div style='padding:12px 18px; margin:8px 0;
+                            border:2px solid #ffdd00;
+                            border-radius:10px;
+                            background:linear-gradient(90deg,
+                                rgba(255,221,0,0.12), rgba(255,221,0,0));
+                            box-shadow:0 0 14px rgba(255,221,0,0.28);'>
+                  <div style='display:flex; justify-content:space-between;
+                              align-items:baseline; flex-wrap:wrap;'>
+                    <div>
+                      <span style='font-size:18px; font-weight:700;'>
+                        💡 {b['name']} ({b['code']})
+                      </span>
+                      <span style='color:#aaa; margin-left:8px; font-size:13px;'>
+                        · {b['industry']}
+                      </span>
+                    </div>
+                    <div>
+                      <span style='font-size:24px; font-weight:800;
+                              color:{"#e55353" if b["chg_pct"]>=0 else "#3dbd6e"};'>
+                        {b['price']:.2f}
+                      </span>
+                      <span style='margin-left:6px;
+                              color:{"#e55353" if b["chg_pct"]>=0 else "#3dbd6e"};'>
+                        {'+' if b['chg_pct']>=0 else ''}{b['chg_pct']:.2f}%
+                      </span>
+                    </div>
+                  </div>
+                  <div style='margin-top:8px; font-size:13px; color:#ddd;'>
+                    🟡 <b>進場區 {lo:.2f} ~ {hi:.2f}</b> 已觸及　·
+                    分數 <b>{b['score']:+d}</b>　·　建議 <b>{b['action']}</b>
+                    {' · 目標 ' + format(b['target'], '.2f') if b.get('target') else ''}
+                    {' · 停損 ' + format(b['stop'], '.2f') if b.get('stop') else ''}
+                  </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            c_a, c_b = st.columns([5, 1])
+            with c_b:
+                if st.button("🔎 分析", key=f"wlz_{b['code']}",
+                             use_container_width=True):
+                    st.session_state._mode_override = "🔎 個股查詢"
+                    st.session_state.stock_code = b["code"]
+                    st.session_state.auto_analyze = True
+                    st.rerun()
+
+    # ---- 其他收藏 ----
+    st.markdown("### 📋 全部收藏")
+    cols = st.columns(3)
+    for i, b in enumerate(other + in_zone):
+        with cols[i % 3]:
+            with st.container(border=True):
+                if "error" in b:
+                    st.error(f"{b['code']} 取得失敗：{b['error'][:40]}")
+                    if st.button("❌ 移除", key=f"rm_err_{b['code']}",
+                                 use_container_width=True):
+                        watchlist.remove(b["code"])
+                        st.rerun()
+                    continue
+                chg_color = "#e55353" if b["chg_pct"] >= 0 else "#3dbd6e"
+                border = ("border:2px solid #ffdd00; box-shadow:0 0 10px "
+                          "rgba(255,221,0,0.4);") if b["in_zone"] else ""
+                st.markdown(
+                    f"""
+                    <div style='padding:4px; {border}'>
+                      <div style='font-size:14px; font-weight:700;'>
+                        {b['name']} ({b['code']})
+                        {"🟡" if b['in_zone'] else ""}
+                      </div>
+                      <div style='color:#888; font-size:11px;'>
+                        {b.get('industry', '—')}
+                      </div>
+                      <div style='margin:6px 0;'>
+                        <span style='font-size:22px; font-weight:800;
+                                color:{chg_color};'>
+                          {b['price']:.2f}
+                        </span>
+                        <span style='font-size:13px; color:{chg_color};
+                                margin-left:4px;'>
+                          {'+' if b['chg_pct']>=0 else ''}{b['chg_pct']:.2f}%
+                        </span>
+                      </div>
+                      <div style='font-size:12px;'>
+                        分數 <b>{b['score']:+d}</b> · {b['stance']}<br>
+                        建議：<b>{b['action']}</b>
+                      </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+                sub_a, sub_b = st.columns(2)
+                with sub_a:
+                    if st.button("🔎", key=f"v_{b['code']}",
+                                 use_container_width=True,
+                                 help="完整分析"):
+                        st.session_state._mode_override = "🔎 個股查詢"
+                        st.session_state.stock_code = b["code"]
+                        st.session_state.auto_analyze = True
+                        st.rerun()
+                with sub_b:
+                    if st.button("❌", key=f"rm_{b['code']}",
+                                 use_container_width=True,
+                                 help="移除收藏"):
+                        watchlist.remove(b["code"])
+                        st.rerun()
 
 
 # ============================================================
@@ -841,8 +1082,42 @@ else:
     st.sidebar.subheader("查詢條件")
     if "stock_code" not in st.session_state:
         st.session_state.stock_code = "2330"
-    code = st.sidebar.text_input("股票代號", key="stock_code",
-                                 help="例：2330、2317、6488.TWO")
+
+    # --- B. 自動補齊：以產業表建立下拉 options ---
+    @st.cache_data(ttl=86400, show_spinner=False)
+    def _stock_options() -> list[str]:
+        df = industry.snapshot()
+        if df.empty:
+            return ["2330 台積電"]
+        return (df["code"] + " " + df["short_name"]
+                + " · " + df["industry"]).tolist()
+
+    opts = _stock_options()
+    # 找到預設選項索引
+    current_code = st.session_state.stock_code
+    default_idx = 0
+    for i, o in enumerate(opts):
+        if o.startswith(current_code + " "):
+            default_idx = i
+            break
+    selected = st.sidebar.selectbox(
+        "🔍 搜尋股票（輸入代號/名稱/產業）",
+        opts, index=default_idx,
+        help="輸入任何關鍵字自動過濾",
+    )
+    code = selected.split()[0] if selected else current_code
+    st.session_state.stock_code = code
+
+    # --- A. ⭐ 收藏按鈕 ---
+    is_watched = watchlist.contains(code)
+    wbtn_label = "🌟 已收藏" if is_watched else "⭐ 加入收藏"
+    if st.sidebar.button(wbtn_label, use_container_width=True):
+        if is_watched:
+            watchlist.remove(code)
+        else:
+            watchlist.add(code)
+        st.rerun()
+
     interval_label = st.sidebar.selectbox("主要週期", ["日線", "週線", "月線"], index=0)
     period_label = st.sidebar.selectbox(
         "觀察期間", ["6 個月", "1 年", "2 年", "5 年"], index=1,
@@ -1093,6 +1368,43 @@ else:
         from analyzer import wave as _wave
         w_detail = _wave.detect(df)
         candle_hist = _cs.scan_history(df, lookback=90)
+
+        # ---- 技術指標 Pills（圖表上方） ----
+        last_ind = df.iloc[-1]
+        def _pill(label, value, color="#888"):
+            return (f"<span style='display:inline-block; padding:3px 9px; "
+                    f"margin:2px; border-radius:12px; "
+                    f"background:rgba(40,44,55,0.7); "
+                    f"border:1px solid {color}; font-size:12px;'>"
+                    f"<span style='color:{color};'>{label}</span> "
+                    f"<b style='color:#fff;'>{value}</b></span>")
+        pills = []
+        for p, col in [(5, "#ff7f0e"), (10, "#1f77b4"),
+                       (20, "#9467bd"), (60, "#8c564b")]:
+            k = f"ma{p}"
+            if k in df.columns and not pd.isna(last_ind.get(k)):
+                pills.append(_pill(f"MA{p}", f"{last_ind[k]:.2f}", col))
+        if "k" in df.columns and not pd.isna(last_ind.get("k")):
+            k_col = "#d62728" if last_ind["k"] > 80 \
+                else "#2ca02c" if last_ind["k"] < 20 else "#1f77b4"
+            pills.append(_pill("KD",
+                f"{last_ind['k']:.0f}/{last_ind['d']:.0f}", k_col))
+        if "rsi" in df.columns and not pd.isna(last_ind.get("rsi")):
+            r_col = "#d62728" if last_ind["rsi"] > 70 \
+                else "#2ca02c" if last_ind["rsi"] < 30 else "#aaa"
+            pills.append(_pill("RSI", f"{last_ind['rsi']:.1f}", r_col))
+        if "macd_dif" in df.columns and not pd.isna(last_ind.get("macd_dif")):
+            m_col = "#d62728" if last_ind["macd_dif"] > last_ind["macd_dem"] \
+                else "#2ca02c"
+            pills.append(_pill("MACD", f"{last_ind['macd_dif']:+.2f}", m_col))
+        if diag.econ:
+            pills.append(_pill("Hurst",
+                f"{diag.econ.hurst:.2f}", "#9467bd"))
+            pills.append(_pill("波動",
+                f"{diag.econ.vol_recent * 100:.0f}% x{diag.econ.vol_ratio:.2f}",
+                "#ffa500"))
+        st.markdown("".join(pills), unsafe_allow_html=True)
+        st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
         trend_info = {"support": diag.support, "resistance": diag.resistance}
         fig = chart.build(
             df, title=f"{name} ({code}) · {interval_label}",
