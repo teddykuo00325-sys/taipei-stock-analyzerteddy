@@ -95,4 +95,74 @@ def classify_last(df: pd.DataFrame) -> list[Candle]:
        last["open"] > prev["high"] and last["close"] < mid_prev:
         patterns.append(Candle("烏雲罩頂", "bear", "高開低走，吃掉前日一半以上"))
 
+    # --- 3 日組合 ---
+    if len(df) >= 3:
+        d0 = df.iloc[-3]
+        d1 = prev  # iloc[-2]
+        d2 = last  # iloc[-1]
+        body0 = _body(d0)
+        body1 = _body(d1)
+        body2 = _body(d2)
+        rng0 = _range(d0)
+        rng1 = _range(d1)
+        rng2 = _range(d2)
+        d0_bull = d2["close"] > d2["open"]
+
+        # 早晨之星：大黑 + 小實體（缺口下跳）+ 大紅（收復黑棒一半以上）
+        if (d0["close"] < d0["open"] and  # 大黑
+                body0 / (rng0 or 1) > 0.6 and
+                body1 / (rng1 or 1) < 0.35 and  # 小實體
+                d2["close"] > d2["open"] and  # 大紅
+                body2 / (rng2 or 1) > 0.6 and
+                d2["close"] > (d0["open"] + d0["close"]) / 2):
+            patterns.append(Candle("早晨之星", "bull",
+                                   "低檔三日反轉：大黑→小星→大紅，強勢買訊"))
+
+        # 夜星：大紅 + 小實體（缺口上跳）+ 大黑（吃下紅棒一半以上）
+        if (d0["close"] > d0["open"] and  # 大紅
+                body0 / (rng0 or 1) > 0.6 and
+                body1 / (rng1 or 1) < 0.35 and
+                d2["close"] < d2["open"] and  # 大黑
+                body2 / (rng2 or 1) > 0.6 and
+                d2["close"] < (d0["open"] + d0["close"]) / 2):
+            patterns.append(Candle("夜星", "bear",
+                                   "高檔三日反轉：大紅→小星→大黑，強勢賣訊"))
+
+        # 紅三兵：連續三日長紅，各日收盤逐日攀高
+        all_red = all(r["close"] > r["open"] for r in (d0, d1, d2))
+        step_up = d0["close"] < d1["close"] < d2["close"]
+        solid = all(_body(r) / (_range(r) or 1) > 0.55 for r in (d0, d1, d2))
+        if all_red and step_up and solid:
+            patterns.append(Candle("紅三兵", "bull",
+                                   "連續三日長紅逐日攀高，多頭強勢"))
+
+        # 三烏鴉：連續三日長黑，各日收盤逐日下探
+        all_bk = all(r["close"] < r["open"] for r in (d0, d1, d2))
+        step_dn = d0["close"] > d1["close"] > d2["close"]
+        if all_bk and step_dn and solid:
+            patterns.append(Candle("三烏鴉", "bear",
+                                   "連續三日長黑逐日下探，空頭強勢"))
+
     return patterns
+
+
+def classify_at(df: pd.DataFrame, idx: int) -> list[Candle]:
+    """辨識指定位置的 K 線型態（支援多日組合，需 idx >= 2）."""
+    if idx < 1 or idx >= len(df):
+        return []
+    sub = df.iloc[max(0, idx - 5):idx + 1]
+    return classify_last(sub)
+
+
+def scan_history(df: pd.DataFrame, lookback: int = 60) -> list[tuple[int, list[Candle]]]:
+    """回溯近 lookback 根 K 線，找出型態發生位置.
+
+    回傳 [(df_index, [Candle, ...]), ...]
+    """
+    out: list[tuple[int, list[Candle]]] = []
+    start = max(2, len(df) - lookback)
+    for i in range(start, len(df)):
+        p = classify_at(df, i)
+        if p:
+            out.append((i, p))
+    return out

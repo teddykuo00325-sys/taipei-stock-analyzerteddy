@@ -79,6 +79,8 @@ def render_card(row: pd.Series, rank: int):
     df = row["_df_tail"]
     score_icon = "🔴" if d.score > 0 else "🟢" if d.score < 0 else "⚪"
     chg_sign = "+" if row["漲跌%"] >= 0 else ""
+    import datetime as _dtk
+    now_str = _dtk.datetime.now().strftime("%Y-%m-%d %H:%M")
     tgt_str = ""
     if d.target_price:
         pct = (d.target_price / row["收盤"] - 1) * 100
@@ -87,15 +89,16 @@ def render_card(row: pd.Series, rank: int):
     with st.container(border=True):
         st.markdown(
             f"### #{rank}　{row['名稱']} ({row['代號']})　"
-            f"<small>收盤 {row['收盤']:.2f} ({chg_sign}{row['漲跌%']:.2f}%)</small>　"
+            f"<small>現價 {row['收盤']:.2f} ({chg_sign}{row['漲跌%']:.2f}%)　·　"
+            f"🕒 {now_str}</small>　"
             f"{score_icon} **分數 {d.score:+d}**　"
             f"{ACTION_ICONS.get(d.action, '')} **{d.action}**{tgt_str}",
             unsafe_allow_html=True,
         )
 
-        col_c, col_i = st.columns([3, 2])
+        col_c, col_i = st.columns([3, 3])
         with col_c:
-            fig = chart.mini(df, height=170)
+            fig = chart.mini(df, height=180)
             st.plotly_chart(fig, use_container_width=True,
                             key=f"mini_{rank}_{row['代號']}",
                             config={"displayModeBar": False})
@@ -104,19 +107,25 @@ def render_card(row: pd.Series, rank: int):
                 if "（" in d.volume_note else d.volume_note
             fib_nearest = row.get("費波", "—")
             hurst_val = row.get("Hurst")
-            lines = [
-                f"**均線**：{d.ma_state}",
-                f"**波浪**：{d.wave_label}",
-                f"**量價**：{vol_brief}",
-                f"**KD / RSI**：{row['KD']} / {row['RSI']}",
-                f"**法人 (張)**：{row['法人(張)']}",
-                f"**融資 / 融券**：{row['融資/券']}",
-                f"**Hurst**：{hurst_val if hurst_val is not None else '—'}"
-                + (f"　**費波**：{fib_nearest}" if fib_nearest != "—" else ""),
-            ]
+            hurst_str = f"{hurst_val:.2f}" if hurst_val is not None else "—"
+            # 2 欄資訊（3 列 × 2 欄）
+            info_l, info_r = st.columns(2)
+            with info_l:
+                st.markdown(
+                    f"**均線**　{d.ma_state}  \n"
+                    f"**量價**　{vol_brief}  \n"
+                    f"**法人**　{row['法人(張)']} 張  \n"
+                    f"**Hurst**　{hurst_str}",
+                )
+            with info_r:
+                st.markdown(
+                    f"**波浪**　{d.wave_label}  \n"
+                    f"**KD/RSI**　{row['KD']} / {row['RSI']}  \n"
+                    f"**融資/券**　{row['融資/券']}  \n"
+                    f"**費波**　{fib_nearest}",
+                )
             if d.weekly_note:
-                lines.append(f"**週線**：{d.weekly_note.replace('週線', '')}")
-            st.markdown("  \n".join(lines))
+                st.caption(f"📅 週線　{d.weekly_note.replace('週線', '').strip()}")
 
         pa = st.columns(4)
         if d.target_price:
@@ -842,10 +851,12 @@ else:
     # ============================================================
     # 📌 頂部：資訊列 + 診斷書 + 關鍵價位 + 分數構成
     # ============================================================
+    import datetime as _dt_ind
+    now_str = _dt_ind.datetime.now().strftime("%Y-%m-%d %H:%M")
     c1, c2, c3, c4 = st.columns([3, 2, 2, 2])
-    c1.metric(f"{name} ({code})", f"{price:,.2f}",
+    c1.metric(f"{name} ({code})　現價", f"{price:,.2f}",
               f"{chg:+.2f} ({chg_pct:+.2f}%)")
-    c1.caption(f"🏭 **{ind_name}** · {full_name[:26]}")
+    c1.caption(f"🏭 **{ind_name}** · {full_name[:20]} · 🕒 {now_str}")
     c2.metric("成交量", f"{int(last['volume']):,}",
               f"{(last['volume'] / last['vol_ma5'] - 1) * 100:+.1f}% vs 5MA")
     c3.metric("多空評分", f"{diag.score:+d}", diag.stance)
@@ -996,20 +1007,25 @@ else:
 
     # ---- 📉 圖表 ----
     with tab_chart:
+        from analyzer import candlestick as _cs
         from analyzer import wave as _wave
         w_detail = _wave.detect(df)
+        candle_hist = _cs.scan_history(df, lookback=90)
         trend_info = {"support": diag.support, "resistance": diag.resistance}
         fig = chart.build(
             df, title=f"{name} ({code}) · {interval_label}",
             patterns=diag.chart_patterns,
             fib=diag.fib, wave_pivots=w_detail.pivots,
             trend=trend_info,
+            candle_history=candle_hist,
+            econ=diag.econ,
         )
         st.plotly_chart(fig, use_container_width=True)
         st.caption(
             "📖 **圖例**：🟥 紅實線=壓力　·　🟩 綠實線=支撐　·　"
-            "🟪 紫虛線=費波納契　·　▲▼=波浪轉折　·　灰虛線=型態頸線　·　"
-            "下方子圖=成交量 / MACD / KD"
+            "🟪 紫虛線=費波納契　·　綠/紅虛線=上升/下降切線　·　"
+            "▲▼(編號)=波浪 · 名稱浮標=K 線型態　·　"
+            "左上角=Hurst/波動率　·　下方子圖=成交量 / MACD / KD"
         )
 
     # ---- 📊 趨勢結構（均線 + 波段 + 波浪 + 週線） ----

@@ -7,16 +7,20 @@ from plotly.subplots import make_subplots
 
 
 def build(df: pd.DataFrame, title: str = "", patterns=None,
-          fib=None, wave_pivots=None, trend=None) -> go.Figure:
+          fib=None, wave_pivots=None, trend=None,
+          candle_history=None, econ=None) -> go.Figure:
     """建構多面板技術圖表.
 
     參數：
-      patterns: list[Pattern]    — W 底/M 頭等，自動繪頸線
-      fib: FibAnalysis           — 費波納契級位（只繪關鍵 4 條）
-      wave_pivots: list[(idx,'H'/'L',price)] — 波浪轉折點
-      trend: dict                — {support, resistance} 畫水平線
+      patterns: list[Pattern]         — W 底/M 頭等，自動繪頸線
+      fib: FibAnalysis                — 費波納契級位
+      wave_pivots: list[(idx, H/L, price)] — 波浪轉折點
+      trend: dict                      — {support, resistance}
+      candle_history: list[(df_idx, [Candle, ...])] — 歷史 K 線型態
+      econ: Econ                       — 計量物理結果（供右上角標註）
     """
     patterns = patterns or []
+    candle_history = candle_history or []
     fig = make_subplots(
         rows=4, cols=1, shared_xaxes=True,
         row_heights=[0.52, 0.15, 0.17, 0.16], vertical_spacing=0.02,
@@ -93,31 +97,127 @@ def build(df: pd.DataFrame, title: str = "", patterns=None,
                     row=1, col=1,
                 )
 
-    # 波浪轉折點標記
+    # 波浪轉折點標記（含編號 1~5 或 H/L）
+    abs_pivots: list[tuple[int, str, float]] = []
     if wave_pivots:
-        # 將整數 index 轉為實際日期
-        for piv in wave_pivots[-6:]:  # 最近 6 個轉折
-            idx, typ, price = piv
-            # pivots 是相對 tail(120) 的 index
-            lookback = 120 if len(df) >= 120 else len(df)
-            tail_start = len(df) - lookback
+        lookback = 120 if len(df) >= 120 else len(df)
+        tail_start = len(df) - lookback
+        for (idx, typ, price) in wave_pivots:
             actual_idx = tail_start + idx
             if 0 <= actual_idx < len(df):
-                date = df.index[actual_idx]
-                marker_color = "#d62728" if typ == "H" else "#2ca02c"
+                abs_pivots.append((actual_idx, typ, price))
+
+    # 近 6 個轉折加上編號標籤（5-4-3-2-1 倒序代表波浪次序）
+    if abs_pivots:
+        recent = abs_pivots[-6:]
+        wave_nums = list(range(len(recent), 0, -1))  # 6,5,4,3,2,1
+        for (actual_idx, typ, price), num in zip(recent, wave_nums):
+            date = df.index[actual_idx]
+            marker_color = "#d62728" if typ == "H" else "#2ca02c"
+            label = f"{typ}{num}"
+            fig.add_trace(
+                go.Scatter(
+                    x=[date], y=[price], mode="markers+text",
+                    marker=dict(size=11, color=marker_color,
+                                symbol="triangle-down" if typ == "H"
+                                else "triangle-up",
+                                line=dict(color="white", width=1)),
+                    text=[label],
+                    textposition="top center" if typ == "H" else "bottom center",
+                    textfont=dict(size=10, color=marker_color,
+                                  family="sans-serif"),
+                    showlegend=False, hoverinfo="skip",
+                ),
+                row=1, col=1,
+            )
+
+    # --- 自動繪製近期上升/下降切線 ---
+    if abs_pivots and len(abs_pivots) >= 3:
+        lows = [(i, p) for i, t, p in abs_pivots if t == "L"]
+        highs = [(i, p) for i, t, p in abs_pivots if t == "H"]
+        # 上升切線：最近兩個低點且第二個 > 第一個
+        if len(lows) >= 2:
+            i1, p1 = lows[-2]
+            i2, p2 = lows[-1]
+            if p2 > p1 and i2 > i1:
+                # 延伸到最新日期
+                slope = (p2 - p1) / (i2 - i1)
+                ext_i = len(df) - 1
+                ext_p = p2 + slope * (ext_i - i2)
                 fig.add_trace(
                     go.Scatter(
-                        x=[date], y=[price], mode="markers+text",
-                        marker=dict(size=9, color=marker_color,
-                                    symbol="triangle-down" if typ == "H"
-                                    else "triangle-up"),
-                        text=[typ], textposition="top center"
-                        if typ == "H" else "bottom center",
-                        textfont=dict(size=9, color=marker_color),
+                        x=[df.index[i1], df.index[ext_i]],
+                        y=[p1, ext_p], mode="lines",
+                        line=dict(color="rgba(44,160,44,0.75)",
+                                  width=2, dash="dash"),
+                        name="上升切線",
                         showlegend=False, hoverinfo="skip",
                     ),
                     row=1, col=1,
                 )
+        # 下降切線：最近兩個高點且第二個 < 第一個
+        if len(highs) >= 2:
+            i1, p1 = highs[-2]
+            i2, p2 = highs[-1]
+            if p2 < p1 and i2 > i1:
+                slope = (p2 - p1) / (i2 - i1)
+                ext_i = len(df) - 1
+                ext_p = p2 + slope * (ext_i - i2)
+                fig.add_trace(
+                    go.Scatter(
+                        x=[df.index[i1], df.index[ext_i]],
+                        y=[p1, ext_p], mode="lines",
+                        line=dict(color="rgba(214,39,40,0.75)",
+                                  width=2, dash="dash"),
+                        name="下降切線",
+                        showlegend=False, hoverinfo="skip",
+                    ),
+                    row=1, col=1,
+                )
+
+    # --- K 線型態歷史標記（近 60 日發生者）---
+    if candle_history:
+        seen_name = set()
+        for (cand_idx, candles) in candle_history[-10:]:  # 最近 10 個型態點
+            if cand_idx >= len(df):
+                continue
+            date = df.index[cand_idx]
+            for c in candles:
+                # 同名型態同位置只標一次
+                key = (cand_idx, c.name)
+                if key in seen_name:
+                    continue
+                seen_name.add(key)
+                is_bull = c.signal == "bull"
+                y_at = df["low"].iloc[cand_idx] * 0.985 if is_bull \
+                    else df["high"].iloc[cand_idx] * 1.015
+                arrow_color = "#d62728" if is_bull else "#2ca02c"
+                fig.add_annotation(
+                    x=date, y=y_at,
+                    text=f"<b>{c.name}</b>",
+                    showarrow=True, arrowhead=2, arrowsize=1,
+                    arrowwidth=1.2, arrowcolor=arrow_color,
+                    ax=0, ay=25 if is_bull else -25,
+                    font=dict(size=10, color=arrow_color,
+                              family="sans-serif"),
+                    bgcolor="rgba(14,17,23,0.85)",
+                    bordercolor=arrow_color, borderwidth=0.8,
+                    borderpad=2,
+                    row=1, col=1,
+                )
+
+    # --- Hurst / 計量物理角落標註 ---
+    if econ is not None:
+        fig.add_annotation(
+            xref="paper", yref="paper", x=0.01, y=0.99,
+            text=(f"🔬 Hurst={econ.hurst:.2f} · "
+                  f"波動 {econ.vol_recent * 100:.0f}%（x{econ.vol_ratio:.2f}）"),
+            showarrow=False,
+            font=dict(size=11, color="#ccc"),
+            bgcolor="rgba(20,24,35,0.8)",
+            bordercolor="rgba(148,103,189,0.4)", borderwidth=0.8,
+            borderpad=4, xanchor="left", yanchor="top",
+        )
 
     # --- 成交量 ---
     vol_color = [
