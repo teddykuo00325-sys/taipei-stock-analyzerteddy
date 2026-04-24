@@ -238,19 +238,31 @@ def _fetch_one(key: str) -> Quote | None:
         return None
 
 
-def fetch_international(max_age_sec: int = 3600) -> dict[str, Quote]:
+def fetch_international(max_age_sec: int = 900) -> dict[str, Quote]:
+    """國際行情 — 15 分鐘快取，個別項目失敗時保留上次成功資料."""
     now = time()
     if _intl_cache["v"] and now - _intl_cache["t"] < max_age_sec:
         return _intl_cache["v"]
-    out: dict[str, Quote] = {}
+
+    prev = dict(_intl_cache.get("v") or {})
+    fresh: dict[str, Quote] = {}
     for key in YF_TICKERS:
         q = _fetch_one(key)
         if q:
-            out[key] = q
-    if out:
-        _intl_cache["v"] = out
-        _intl_cache["t"] = now
-    return out
+            fresh[key] = q
+
+    # 部分失敗時，未抓到的項目保留上次結果（避免 60 分鐘空窗）
+    merged = {**prev, **fresh}
+
+    if merged:
+        _intl_cache["v"] = merged
+        # 若這次 fetch 完整（全部 6 檔都拿到）→ 更新時間戳
+        # 部分失敗只擴充資料但不重置時間，讓下次更早重試
+        if len(fresh) >= len(YF_TICKERS):
+            _intl_cache["t"] = now
+        elif not prev:
+            _intl_cache["t"] = now  # 首次至少給個時間
+    return merged
 
 
 # ---------- 展寬貴金屬 (GCK99) ----------
