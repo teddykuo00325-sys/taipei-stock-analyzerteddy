@@ -1283,10 +1283,22 @@ else:
 
     interval_label = st.sidebar.selectbox("主要週期", ["日線", "週線", "月線"], index=0)
     period_label = st.sidebar.selectbox(
-        "觀察期間", ["6 個月", "1 年", "2 年", "5 年"], index=1,
+        "觀察期間",
+        ["1 個月", "3 個月", "6 個月", "1 年", "2 年", "5 年"],
+        index=1,   # 預設 3 個月
     )
     interval_map = {"日線": "1d", "週線": "1wk", "月線": "1mo"}
-    period_map = {"6 個月": "6mo", "1 年": "1y", "2 年": "2y", "5 年": "5y"}
+    # 實際抓取：短期間也拉 1 年以保留均線 / 指標完整度
+    fetch_map = {
+        "1 個月": "1y", "3 個月": "1y", "6 個月": "1y",
+        "1 年": "1y", "2 年": "2y", "5 年": "5y",
+    }
+    # 圖表預設顯示交易日數
+    display_days_map = {
+        "1 個月": 22, "3 個月": 66, "6 個月": 130,
+        "1 年": 252, "2 年": 504, "5 年": 1260,
+    }
+    period_map = fetch_map  # 相容原變數名
 
     live_on = st.sidebar.checkbox(
         "🔴 盤中即時更新", value=False,
@@ -1611,6 +1623,7 @@ else:
             target_price=diag.target_price,
             short_stop=diag.short_stop,
             mid_stop=diag.mid_stop,
+            display_days=display_days_map.get(period_label, 130),
         )
         st.plotly_chart(fig, use_container_width=True,
                         config={

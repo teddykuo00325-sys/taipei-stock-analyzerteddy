@@ -10,7 +10,8 @@ def build(df: pd.DataFrame, title: str = "", patterns=None,
           fib=None, wave_pivots=None, trend=None,
           candle_history=None, econ=None,
           entry_zone=None, target_price=None,
-          short_stop=None, mid_stop=None) -> go.Figure:
+          short_stop=None, mid_stop=None,
+          display_days: int = 130) -> go.Figure:
     """建構多面板技術圖表.
 
     參數：
@@ -339,10 +340,10 @@ def build(df: pd.DataFrame, title: str = "", patterns=None,
         fig.add_hline(y=80, line_dash="dot", line_color="#aaa", row=4, col=1)
         fig.add_hline(y=20, line_dash="dot", line_color="#aaa", row=4, col=1)
 
-    # 預設顯示近 6 個月
+    # 依使用者選擇的期間決定預設顯示範圍
     if len(df) > 0:
         end_dt = df.index[-1]
-        start_dt = df.index[max(0, len(df) - 130)]  # 約 6 個月交易日
+        start_dt = df.index[max(0, len(df) - display_days)]
     else:
         start_dt = end_dt = None
 
