@@ -76,6 +76,68 @@ def detect(df: pd.DataFrame, order: int = 5, lookback: int = 120) -> list[Patter
             patterns.append(Pattern("頭肩頂", "bear", float(neck),
                                     "三高點頭部反轉；跌破頸線為賣點"))
 
+    # --- 三重底：三個低點接近且間距足夠 ---
+    if len(lows_idx) >= 3:
+        a, b, c = lows_idx[-3], lows_idx[-2], lows_idx[-1]
+        if c - a >= 25 and b - a >= 8 and c - b >= 8:
+            pa = float(tail["close"].iloc[a])
+            pb = float(tail["close"].iloc[b])
+            pc = float(tail["close"].iloc[c])
+            avg = (pa + pb + pc) / 3
+            if all(abs(p - avg) / avg < 0.05 for p in (pa, pb, pc)):
+                neck = max(tail["close"].iloc[a:b].max(),
+                           tail["close"].iloc[b:c].max())
+                patterns.append(Pattern(
+                    "三重底", "bull", float(neck),
+                    "三次測試同一底部未破；突破頸線為強烈買進訊號"))
+
+    # --- 三重頂 ---
+    if len(highs_idx) >= 3:
+        a, b, c = highs_idx[-3], highs_idx[-2], highs_idx[-1]
+        if c - a >= 25 and b - a >= 8 and c - b >= 8:
+            pa = float(tail["close"].iloc[a])
+            pb = float(tail["close"].iloc[b])
+            pc = float(tail["close"].iloc[c])
+            avg = (pa + pb + pc) / 3
+            if all(abs(p - avg) / avg < 0.05 for p in (pa, pb, pc)):
+                neck = min(tail["close"].iloc[a:b].min(),
+                           tail["close"].iloc[b:c].min())
+                patterns.append(Pattern(
+                    "三重頂", "bear", float(neck),
+                    "三次測試同一壓力未過；跌破頸線為強烈賣出訊號"))
+
+    # --- ABC 修正：下跌波 - 反彈 B - 續跌 C（多方回檔結束判讀）---
+    if len(highs_idx) >= 2 and len(lows_idx) >= 2:
+        last_highs = sorted(highs_idx)[-2:]
+        last_lows = sorted(lows_idx)[-2:]
+        # 交錯序列 H-L-H-L 或 L-H-L-H 判讀
+        seq = sorted(list(last_highs) + list(last_lows))
+        if len(seq) >= 4:
+            # 判斷最後 4 個轉折的 HLHL 結構
+            last4 = seq[-4:]
+            types = ["H" if i in last_highs else "L" for i in last4]
+            prices = [float(tail["close"].iloc[i]) for i in last4]
+            # 下降 ABC: H-L-H-L 且第二 H < 第一 H、第二 L < 第一 L
+            if types == ["H", "L", "H", "L"]:
+                if prices[2] < prices[0] and prices[3] < prices[1]:
+                    close_now = float(tail["close"].iloc[-1])
+                    if close_now > prices[2]:  # 突破 B 高點
+                        patterns.append(Pattern(
+                            "ABC 修正突破", "bull", prices[2],
+                            "下跌 ABC 三波修正結束，突破 B 波高點；多頭延續訊號"))
+                    else:
+                        patterns.append(Pattern(
+                            "ABC 修正進行中", "neutral", prices[2],
+                            "下跌 ABC 波結構，C 波底部形成中；突破 B 高確認反彈"))
+            # 上升 ABC: L-H-L-H
+            elif types == ["L", "H", "L", "H"]:
+                if prices[2] > prices[0] and prices[3] > prices[1]:
+                    close_now = float(tail["close"].iloc[-1])
+                    if close_now < prices[2]:
+                        patterns.append(Pattern(
+                            "ABC 反彈結束", "bear", prices[2],
+                            "上升 ABC 三波反彈結束，跌破 B 波低點；空頭延續"))
+
     return patterns
 
 

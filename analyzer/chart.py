@@ -55,13 +55,29 @@ def build(df: pd.DataFrame, title: str = "", patterns=None,
                 row=1, col=1,
             )
 
-    # 型態頸線標示
+    # 型態頸線標示（依多/空著色，更顯眼）
     for pat in patterns:
         if pat.neckline:
+            if pat.signal == "bull":
+                lcolor = "rgba(214,39,40,0.85)"   # 紅 bull
+                font_color = "#ff6060"
+            elif pat.signal == "bear":
+                lcolor = "rgba(44,160,44,0.85)"   # 綠 bear
+                font_color = "#3dbd6e"
+            else:
+                lcolor = "rgba(255,215,0,0.75)"   # 黃中性
+                font_color = "#ffd700"
             fig.add_hline(
-                y=pat.neckline, line_dash="dash", line_color="#888",
-                annotation_text=f"{pat.name} 頸線 {pat.neckline:.2f}",
+                y=pat.neckline, line_dash="dash",
+                line_color=lcolor, line_width=1.8,
+                annotation_text=f"<b>{pat.name}</b> 頸線 {pat.neckline:.2f}",
                 annotation_position="top left",
+                annotation_font_color=font_color,
+                annotation_font_size=11,
+                annotation_bgcolor="rgba(20,24,35,0.85)",
+                annotation_bordercolor=font_color,
+                annotation_borderwidth=0.8,
+                annotation_borderpad=3,
                 row=1, col=1,
             )
 

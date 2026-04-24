@@ -443,8 +443,19 @@ if mode == "🎯 今日選股":
 
     long_df = result["long"]
     short_df = result["short"]
+    full_df = result["full"]
 
-    tab_long, tab_short, tab_all = st.tabs([
+    # 計算立即可進場的標的
+    if "_in_entry_zone" in full_df.columns:
+        imm_bull = full_df[(full_df["分數"] > 0) & full_df["_in_entry_zone"]] \
+            .sort_values("分數", ascending=False).reset_index(drop=True)
+        imm_bear = full_df[(full_df["分數"] < 0) & full_df["_in_entry_zone"]] \
+            .sort_values("分數", ascending=True).reset_index(drop=True)
+    else:
+        imm_bull = imm_bear = pd.DataFrame()
+
+    tab_imm, tab_long, tab_short, tab_all = st.tabs([
+        f"⚡ 立即可進 ({len(imm_bull)} 多 / {len(imm_bear)} 空)",
         f"🔴 做多 Top {top_n}",
         f"🟢 做空 Top {top_n}",
         "📋 全部（表格）",
@@ -462,6 +473,23 @@ if mode == "🎯 今日選股":
                 with col_r:
                     render_card(rows.iloc[i + 1], i + 2)
 
+    with tab_imm:
+        st.caption("🎯 **現價位於建議進場區間**的標的 — 不用等拉回或反彈，依朱式戰法立刻可執行")
+        sub_b, sub_s = st.tabs([
+            f"🔴 立即做多 ({len(imm_bull)} 檔)",
+            f"🟢 立即做空 ({len(imm_bear)} 檔)",
+        ])
+        with sub_b:
+            if imm_bull.empty:
+                st.info("⚠️ 目前無現價位於進場區的多方標的；考慮等拉回或查看 做多 Top。")
+            else:
+                _render_grid(imm_bull)
+        with sub_s:
+            if imm_bear.empty:
+                st.info("⚠️ 目前無現價位於進場區的空方標的；考慮等反彈或查看 做空 Top。")
+            else:
+                _render_grid(imm_bear)
+
     with tab_long:
         if long_df.empty:
             st.warning("無符合條件的做多標的")
@@ -478,7 +506,8 @@ if mode == "🎯 今日選股":
         if result["full"].empty:
             st.info("—")
         else:
-            drop_cols = [c for c in ("_df_tail", "_diag", "_patterns_hist")
+            drop_cols = [c for c in ("_df_tail", "_diag",
+                                      "_patterns_hist", "_in_entry_zone")
                          if c in result["full"].columns]
             display = result["full"].drop(columns=drop_cols) \
                 .sort_values("分數", ascending=False).reset_index(drop=True)

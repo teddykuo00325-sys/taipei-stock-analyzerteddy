@@ -78,6 +78,10 @@ def _score_one(code: str, name: str, df: pd.DataFrame,
             "_df_tail": dff.tail(90).copy(),
             "_diag": d,
             "_patterns_hist": candlestick.scan_history(dff, lookback=60),
+            "_in_entry_zone": bool(
+                d.entry_zone and d.entry_zone[0] <= float(last["close"])
+                <= d.entry_zone[1]
+            ),
         }
     except Exception:
         return None

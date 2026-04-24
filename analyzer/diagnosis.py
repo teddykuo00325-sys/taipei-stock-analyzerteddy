@@ -223,24 +223,35 @@ def diagnose(df: pd.DataFrame,
     ma20 = df["ma20"].iloc[-1] if "ma20" in df.columns else None
     entry_zone = None
     if stance in ("多方", "偏多"):
-        # 多頭回測買點：
-        # - MA5 / MA10 / 現價 三者取合適範圍
-        # - 下緣 = MA10（保留朱式回測不破 MA10 精神）
-        # - 上緣 = MA5（更接近現價）；若 MA5 也遠低於現價，取現價 × 0.97
+        # 多頭回測買點：MA10 (下緣) ~ MA5 (上緣) 或現價回檔 3%
         candidates = []
         if not pd.isna(ma10):
             candidates.append(float(ma10))
         if not pd.isna(ma5):
             candidates.append(float(ma5))
-        upper = price * 0.97  # 現價回檔 3% 作為備選上緣
-        candidates.append(upper)
+        candidates.append(price * 0.97)
         if len(candidates) >= 2:
-            # 取最低為下緣（MA10）、次低為上緣（MA5 or 現價-3%）
             candidates_sorted = sorted(candidates)
             lo = candidates_sorted[0]
             hi = candidates_sorted[min(1, len(candidates_sorted) - 1)]
-            # 若區間太窄 (<0.5%)，擴展為 [MA10, MA5]
             if abs(hi - lo) / max(lo, 1) < 0.005 and not pd.isna(ma5) \
+                    and not pd.isna(ma10):
+                lo = min(float(ma10), float(ma5))
+                hi = max(float(ma10), float(ma5))
+            entry_zone = (round(lo, 2), round(hi, 2))
+    elif stance in ("空方", "偏空"):
+        # 空方反彈放空區：MA5 (下緣) ~ MA10 (上緣) 或現價反彈 3%
+        candidates = []
+        if not pd.isna(ma10):
+            candidates.append(float(ma10))
+        if not pd.isna(ma5):
+            candidates.append(float(ma5))
+        candidates.append(price * 1.03)
+        if len(candidates) >= 2:
+            candidates_sorted = sorted(candidates, reverse=True)
+            hi = candidates_sorted[0]
+            lo = candidates_sorted[min(1, len(candidates_sorted) - 1)]
+            if abs(hi - lo) / max(hi, 1) < 0.005 and not pd.isna(ma5) \
                     and not pd.isna(ma10):
                 lo = min(float(ma10), float(ma5))
                 hi = max(float(ma10), float(ma5))
