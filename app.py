@@ -478,9 +478,20 @@ if mode == "🎯 今日選股":
         if result["full"].empty:
             st.info("—")
         else:
-            display = result["full"].drop(
-                columns=[c for c in ("_df_tail", "_diag") if c in result["full"].columns]
-            ).sort_values("分數", ascending=False).reset_index(drop=True)
+            drop_cols = [c for c in ("_df_tail", "_diag", "_patterns_hist")
+                         if c in result["full"].columns]
+            display = result["full"].drop(columns=drop_cols) \
+                .sort_values("分數", ascending=False).reset_index(drop=True)
+            # 強制數值欄位型別一致，避免 Arrow None/float 混合錯誤
+            for col in ("收盤", "漲跌%", "分數", "RSI", "日均量(張)",
+                        "目標價", "短線停損", "風報比", "Hurst"):
+                if col in display.columns:
+                    display[col] = pd.to_numeric(display[col], errors="coerce")
+            # 確保字串欄位為 string
+            for col in ("代號", "名稱", "評估", "建議", "均線", "量價",
+                        "波浪", "KD", "法人(張)", "融資/券", "費波"):
+                if col in display.columns:
+                    display[col] = display[col].astype(str).fillna("—")
 
             def _color_score(v):
                 if pd.isna(v):
