@@ -336,6 +336,27 @@ def build(df: pd.DataFrame, title: str = "", patterns=None,
                        line=dict(color="#ff7f0e", width=1)),
             row=2, col=1,
         )
+    if "vol_ma20" in df.columns:
+        fig.add_trace(
+            go.Scatter(x=df.index, y=df["vol_ma20"], name="量 MA20",
+                       line=dict(color="#ffd700", width=1.2, dash="dash")),
+            row=2, col=1,
+        )
+        # 爆量星號：vol > 2x VMA20
+        burst_mask = df["volume"] > df["vol_ma20"] * 2
+        if burst_mask.any():
+            bx = df.index[burst_mask]
+            by = df["volume"][burst_mask]
+            hover = [f"🌟 爆量 {v / 1000:,.0f} 張<br>"
+                     f"= {df.at[d, 'volume'] / df.at[d, 'vol_ma20']:.1f}x VMA20"
+                     for d, v in zip(bx, by)]
+            fig.add_trace(go.Scatter(
+                x=bx, y=by, mode="markers",
+                marker=dict(symbol="star", size=11, color="#ffd700",
+                            line=dict(color="#fff", width=0.8)),
+                hovertext=hover, hoverinfo="text",
+                name="爆量", showlegend=False,
+            ), row=2, col=1)
 
     # --- MACD ---
     if "macd_dif" in df.columns:
@@ -350,12 +371,62 @@ def build(df: pd.DataFrame, title: str = "", patterns=None,
 
     # --- KD ---
     if "k" in df.columns:
+        # 過熱 / 超賣 區域背景色
+        fig.add_hrect(y0=80, y1=100,
+                      fillcolor="rgba(214,39,40,0.12)",
+                      layer="below", line_width=0,
+                      row=4, col=1)
+        fig.add_hrect(y0=0, y1=20,
+                      fillcolor="rgba(44,160,44,0.12)",
+                      layer="below", line_width=0,
+                      row=4, col=1)
         fig.add_trace(go.Scatter(x=df.index, y=df["k"], name="K",
-                                 line=dict(color="#1f77b4", width=1)), row=4, col=1)
+                                 line=dict(color="#1f77b4", width=1.4)),
+                      row=4, col=1)
         fig.add_trace(go.Scatter(x=df.index, y=df["d"], name="D",
-                                 line=dict(color="#ff7f0e", width=1)), row=4, col=1)
-        fig.add_hline(y=80, line_dash="dot", line_color="#aaa", row=4, col=1)
-        fig.add_hline(y=20, line_dash="dot", line_color="#aaa", row=4, col=1)
+                                 line=dict(color="#ff7f0e", width=1.4)),
+                      row=4, col=1)
+        fig.add_hline(y=80, line_dash="dot", line_color="#888", row=4, col=1)
+        fig.add_hline(y=20, line_dash="dot", line_color="#888", row=4, col=1)
+
+        # --- KD 金叉 / 死叉 歷史標記 ---
+        gold_x, gold_y, gold_h = [], [], []
+        death_x, death_y, death_h = [], [], []
+        for i in range(1, len(df)):
+            prev_k = df["k"].iloc[i - 1]
+            prev_d = df["d"].iloc[i - 1]
+            curr_k = df["k"].iloc[i]
+            curr_d = df["d"].iloc[i]
+            if pd.isna(prev_k) or pd.isna(curr_k):
+                continue
+            dt = df.index[i]
+            if prev_k <= prev_d and curr_k > curr_d:
+                gold_x.append(dt)
+                gold_y.append(float(curr_k))
+                gold_h.append(f"🟡 KD 金叉<br>{dt.date()}<br>"
+                              f"K={curr_k:.0f} D={curr_d:.0f}")
+            elif prev_k >= prev_d and curr_k < curr_d:
+                death_x.append(dt)
+                death_y.append(float(curr_k))
+                death_h.append(f"🔻 KD 死叉<br>{dt.date()}<br>"
+                               f"K={curr_k:.0f} D={curr_d:.0f}")
+
+        if gold_x:
+            fig.add_trace(go.Scatter(
+                x=gold_x, y=gold_y, mode="markers",
+                marker=dict(symbol="circle", size=8, color="#ffd700",
+                            line=dict(color="#222", width=0.8)),
+                hovertext=gold_h, hoverinfo="text",
+                name="KD 金叉", showlegend=False,
+            ), row=4, col=1)
+        if death_x:
+            fig.add_trace(go.Scatter(
+                x=death_x, y=death_y, mode="markers",
+                marker=dict(symbol="x", size=9, color="#d62728",
+                            line=dict(color="#fff", width=1)),
+                hovertext=death_h, hoverinfo="text",
+                name="KD 死叉", showlegend=False,
+            ), row=4, col=1)
 
     # 依使用者選擇的期間決定預設顯示範圍
     if len(df) > 0:

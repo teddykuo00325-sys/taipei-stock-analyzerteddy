@@ -130,16 +130,30 @@ def generate_signals(df: pd.DataFrame) -> list[Signal]:
                                   f"{level}線失守，空方抬頭"))
 
     # ===== 3. 突破盤整區 / 跌破盤整區（朱家泓買點 #1 / 賣點 #1）=====
-    # 取近 20 日高低區間；當日收盤突破 / 跌破 + 帶量
+    # 需求：量 > 2x VMA20 且價格突破 20 日高低點
     hi20 = df["high"].iloc[-22:-1].max()
     lo20 = df["low"].iloc[-22:-1].min()
-    vol_ratio = last["volume"] / last["vol_ma5"] if last["vol_ma5"] else 0
-    if last["close"] > hi20 and vol_ratio > 1.3:
-        signals.append(Signal("entry", "帶量突破 20 日高點", 3,
-                              f"突破盤整 {hi20:.2f}，量 {vol_ratio:.1f}x；朱式買點#1"))
-    if last["close"] < lo20 and vol_ratio > 1.3:
-        signals.append(Signal("exit", "帶量跌破 20 日低點", 3,
-                              f"跌破盤整 {lo20:.2f}，量 {vol_ratio:.1f}x；朱式賣點#1"))
+    vr5 = last["volume"] / last["vol_ma5"] if last["vol_ma5"] else 0
+    vr20 = (last["volume"] / last["vol_ma20"]
+            if last.get("vol_ma20") else 0)
+    if last["close"] > hi20:
+        if vr20 >= 2.0:
+            signals.append(Signal(
+                "entry", "大量突破 20 日高點", 3,
+                f"突破 {hi20:.2f}，量 {vr20:.1f}x VMA20；強勢買點"))
+        elif vr5 >= 1.3:
+            signals.append(Signal(
+                "entry", "帶量突破 20 日高點", 2,
+                f"突破 {hi20:.2f}，量 {vr5:.1f}x VMA5；但量能不足 2x VMA20"))
+    if last["close"] < lo20:
+        if vr20 >= 2.0:
+            signals.append(Signal(
+                "exit", "大量跌破 20 日低點", 3,
+                f"跌破 {lo20:.2f}，量 {vr20:.1f}x VMA20；強勢賣點"))
+        elif vr5 >= 1.3:
+            signals.append(Signal(
+                "exit", "帶量跌破 20 日低點", 2,
+                f"跌破 {lo20:.2f}，量 {vr5:.1f}x VMA5"))
 
     # ===== 4. MACD 交叉 =====
     if prev["macd_dif"] <= prev["macd_dem"] and last["macd_dif"] > last["macd_dem"]:
@@ -167,10 +181,12 @@ def generate_signals(df: pd.DataFrame) -> list[Signal]:
 
     # ===== 7. 爆量長紅 / 爆量長黑 =====
     chg = (last["close"] - last["open"]) / last["open"] * 100
-    if vol_ratio > 2 and chg > 3:
-        signals.append(Signal("entry", "爆量長紅", 3, f"量 {vol_ratio:.1f}x，漲 {chg:.1f}%"))
-    if vol_ratio > 2 and chg < -3:
-        signals.append(Signal("exit", "爆量長黑", 3, f"量 {vol_ratio:.1f}x，跌 {chg:.1f}%"))
+    if vr5 > 2 and chg > 3:
+        signals.append(Signal("entry", "爆量長紅", 3,
+                              f"量 {vr5:.1f}x VMA5，漲 {chg:.1f}%"))
+    if vr5 > 2 and chg < -3:
+        signals.append(Signal("exit", "爆量長黑", 3,
+                              f"量 {vr5:.1f}x VMA5，跌 {chg:.1f}%"))
 
     # ===== 8. 三關紅 / 三關黑（連三紅 / 連三黑）=====
     if len(df) >= 3:
