@@ -340,10 +340,31 @@ if mode == "🎯 今日選股":
             display = result["full"].drop(
                 columns=[c for c in ("_df_tail", "_diag") if c in result["full"].columns]
             ).sort_values("分數", ascending=False).reset_index(drop=True)
+
+            def _color_score(v):
+                if pd.isna(v):
+                    return ""
+                try:
+                    x = float(v)
+                except Exception:
+                    return ""
+                if x >= 60:
+                    return "background-color: rgba(214,39,40,0.55); color: white"
+                if x >= 25:
+                    return "background-color: rgba(214,39,40,0.30)"
+                if x > 0:
+                    return "background-color: rgba(214,39,40,0.12)"
+                if x <= -60:
+                    return "background-color: rgba(44,160,44,0.55); color: white"
+                if x <= -25:
+                    return "background-color: rgba(44,160,44,0.30)"
+                if x < 0:
+                    return "background-color: rgba(44,160,44,0.12)"
+                return ""
+
             styled = (
                 display.style
-                .background_gradient(subset=["分數"], cmap="RdYlGn",
-                                     vmin=-100, vmax=100)
+                .map(_color_score, subset=["分數"])
                 .format({"收盤": "{:.2f}", "漲跌%": "{:+.2f}",
                          "目標價": "{:.2f}", "短線停損": "{:.2f}",
                          "風報比": "{:.2f}"}, na_rep="—")
