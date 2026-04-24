@@ -172,15 +172,77 @@ ACTION_ICONS = {"強力買進": "🔴🔴", "買進": "🔴", "觀望": "⚪",
 # ============================================================
 # 卡片渲染 (今日選股用)
 # ============================================================
-def render_card(row: pd.Series, rank: int):
+def render_card(row: pd.Series, rank: int, key_ns: str = "card"):
     d = row["_diag"]
     df = row["_df_tail"]
+    code = str(row["代號"])
     score_icon = "🔴" if d.score > 0 else "🟢" if d.score < 0 else "⚪"
     chg_sign = "+" if row["漲跌%"] >= 0 else ""
-    chg_color = "#e55353" if row["漲跌%"] > 0 else "#3dbd6e" \
-        if row["漲跌%"] < 0 else "#aaa"
+    chg_color = ("#e55353" if row["漲跌%"] > 0
+                 else "#3dbd6e" if row["漲跌%"] < 0 else "#aaa")
     import datetime as _dtk
     now_str = _dtk.datetime.now().strftime("%m-%d %H:%M")
+
+    # --- 續漲/續跌 tag ---
+    cont = ""
+    if d.continuation_label == "續漲":
+        cont = ("<span style='background:rgba(214,39,40,0.25); color:#ff8080;"
+                " padding:2px 8px; border-radius:10px; font-size:11px;"
+                " font-weight:600; margin-left:6px;'>📈 續漲</span>")
+    elif d.continuation_label == "續跌":
+        cont = ("<span style='background:rgba(44,160,44,0.25); color:#3dbd6e;"
+                " padding:2px 8px; border-radius:10px; font-size:11px;"
+                " font-weight:600; margin-left:6px;'>📉 續跌</span>")
+    elif d.continuation_label == "震盪":
+        cont = ("<span style='background:rgba(255,215,0,0.25); color:#ffd700;"
+                " padding:2px 8px; border-radius:10px; font-size:11px;"
+                " font-weight:600; margin-left:6px;'>↔️ 震盪</span>")
+
+    # --- 產業 tag ---
+    try:
+        ind_info = industry.info_for(code)
+        ind_name = ind_info["industry"] if ind_info else ""
+    except Exception:
+        ind_name = ""
+    ind_tag = (f"<span style='background:rgba(100,180,255,0.2); color:#7ab8ff;"
+               f" padding:1px 7px; border-radius:8px; font-size:11px;"
+               f" margin-left:6px;'>{ind_name}</span>" if ind_name else "")
+
+    # --- 月營收 YoY ---
+    rev_text = ""
+    try:
+        rv = revenue.for_code(code)
+        if rv and rv.yoy_pct:
+            yoy_color = "#e55353" if rv.yoy_pct > 0 else "#3dbd6e"
+            rev_text = (f"<span style='color:#888; margin-left:6px;'>"
+                        f"月營收 <b style='color:#f5c342;'>"
+                        f"{rv.revenue_k / 1e5:.1f}億</b> "
+                        f"YoY <b style='color:{yoy_color};'>"
+                        f"{rv.yoy_pct:+.1f}%</b></span>")
+    except Exception:
+        pass
+
+    # --- 主型態 banner ---
+    pattern_banner = ""
+    primary_pat = next((p for p in d.chart_patterns
+                        if p.signal != "neutral"),
+                       d.chart_patterns[0] if d.chart_patterns else None)
+    if primary_pat:
+        pc = ("#d62728" if primary_pat.signal == "bull"
+              else "#2ca02c" if primary_pat.signal == "bear"
+              else "#ffd700")
+        pi = ("📈" if primary_pat.signal == "bull"
+              else "📉" if primary_pat.signal == "bear" else "↔️")
+        pattern_banner = (
+            f"<div style='padding:6px 10px; margin:6px 0; "
+            f"border-left:3px solid {pc}; background:rgba(40,44,55,0.45);"
+            f" border-radius:3px; font-size:12px;'>"
+            f"<b style='color:{pc};'>{pi} {primary_pat.name}</b>"
+            f"<span style='color:#bbb; margin-left:8px;'>"
+            f"{primary_pat.note}</span></div>"
+        )
+
+    # --- 進場資訊 ---
     entry_str = ""
     if d.entry_zone:
         lo, hi = d.entry_zone
@@ -188,79 +250,108 @@ def render_card(row: pd.Series, rank: int):
         if price_now < lo:
             hint = "可佈局"
         elif price_now <= hi:
-            hint = "位於進場區"
+            hint = "✅ 已入進場區"
         else:
-            hint = "已突破，等拉回"
-        entry_str = (f"<span style='color:#ffdd55;'>💡 進場 "
-                     f"{lo:.2f}~{hi:.2f}</span> "
-                     f"<span style='color:#999;'>({hint})</span>")
+            hint = "等拉回"
+        entry_str = (f"<span style='color:#ffdd55;'>💡 {lo:.2f}~{hi:.2f}</span>"
+                     f" <span style='color:#999; font-size:12px;'>{hint}</span>")
 
     with st.container(border=True):
-        # --- 標題列：現價醒目 ---
+        # === 頂部 header (代號 名稱 tag + 現價 漲跌 + 分數建議) ===
         st.markdown(
             f"""
             <div style='line-height:1.35;'>
-              <div style='font-size:13px; color:#bbb;'>
-                <b style='color:#fafafa;'>#{rank} {row['名稱']} ({row['代號']})</b>
-                <span style='margin-left:10px;'>🕒 {now_str}</span>
+              <div style='font-size:13px;'>
+                <b style='color:#fafafa; font-size:15px;'>
+                  #{rank} {row['名稱']} ({code})
+                </b>
+                {cont}{ind_tag}
+                <span style='color:#666; margin-left:8px; font-size:11px;'>
+                  🕒 {now_str}</span>
+                {rev_text}
               </div>
-              <div style='margin:6px 0 4px 0; display:flex; align-items:baseline; gap:12px;'>
-                <span style='font-size:13px; color:#999;'>現價</span>
-                <span style='font-size:30px; font-weight:800; color:{chg_color};
+              <div style='margin:4px 0; display:flex;
+                          align-items:baseline; gap:10px;'>
+                <span style='font-size:11px; color:#999;'>現價</span>
+                <span style='font-size:26px; font-weight:800; color:{chg_color};
                              letter-spacing:-0.5px;'>
                   {row['收盤']:.2f}
                 </span>
-                <span style='font-size:18px; font-weight:700; color:{chg_color};'>
+                <span style='font-size:15px; font-weight:700; color:{chg_color};'>
                   {chg_sign}{row['漲跌%']:.2f}%
                 </span>
+                <span style='font-size:13px; color:#888; margin-left:8px;'>
+                  {score_icon} <b>{d.score:+d}</b> · {d.stance}
+                </span>
+                <span style='font-size:13px; margin-left:8px;'>
+                  {ACTION_ICONS.get(d.action, '')} <b>{d.action}</b>
+                </span>
+                <span style='margin-left:8px;'>{entry_str}</span>
               </div>
-              <div style='font-size:14px; margin-top:2px;'>
-                {score_icon} <b>分數 {d.score:+d}</b>
-                <span style='color:#666;'>　·　</span>
-                {ACTION_ICONS.get(d.action, '')} <b>{d.action}</b>
-                <span style='color:#666;'>　·　</span>
-                {entry_str}
-              </div>
+              {pattern_banner}
             </div>
             """,
             unsafe_allow_html=True,
         )
 
-        col_c, col_i = st.columns([3, 3])
-        with col_c:
-            p_hist = row.get("_patterns_hist") if "_patterns_hist" in row \
-                else None
-            fig = chart.mini(df, height=180, patterns_hist=p_hist)
-            st.plotly_chart(fig, use_container_width=True,
-                            key=f"mini_{rank}_{row['代號']}",
-                            config={"displayModeBar": False})
-        with col_i:
-            vol_brief = d.volume_note.split("（")[0] \
-                if "（" in d.volume_note else d.volume_note
-            fib_nearest = row.get("費波", "—")
-            hurst_val = row.get("Hurst")
-            hurst_str = f"{hurst_val:.2f}" if hurst_val is not None else "—"
-            weekly_br = (d.weekly_note.replace("週線", "").strip()
-                         if d.weekly_note else "—")
-            # 2 欄 × 4 列，所有字體 13px 統一
-            info_html = f"""
-            <div style='font-size:13px; line-height:1.7;'>
-              <div style='display:grid; grid-template-columns:1fr 1fr; gap:4px 10px;'>
-                <div><span style='color:#888;'>均線</span>　{d.ma_state}</div>
-                <div><span style='color:#888;'>波浪</span>　{d.wave_label}</div>
-                <div><span style='color:#888;'>量價</span>　{vol_brief}</div>
-                <div><span style='color:#888;'>KD/RSI</span>　{row['KD']} / {row['RSI']}</div>
-                <div><span style='color:#888;'>法人</span>　{row['法人(張)']} 張</div>
-                <div><span style='color:#888;'>融資/券</span>　{row['融資/券']}</div>
-                <div><span style='color:#888;'>Hurst</span>　{hurst_str}</div>
-                <div><span style='color:#888;'>費波</span>　{fib_nearest}</div>
-              </div>
-              <div style='margin-top:6px; color:#888; font-size:12px;'>
-                📅 週線　{weekly_br}
-              </div>
+        # === 中型 K-chart（K + Vol + KD 三副圖）===
+        try:
+            from analyzer import patterns as _p
+            msup, mres = _p.multi_sr(df, n=3)
+        except Exception:
+            msup, mres = [], []
+        p_hist = row.get("_patterns_hist") \
+            if "_patterns_hist" in row else None
+        fig = chart.build_card(
+            df, height=400,
+            supports=msup, resistances=mres,
+            entry_zone=d.entry_zone,
+            target_price=d.target_price,
+            short_stop=d.short_stop,
+            patterns_hist=p_hist,
+        )
+        st.plotly_chart(fig, use_container_width=True,
+                        key=f"{key_ns}_chart_{rank}_{code}",
+                        config={"displayModeBar": False})
+
+        # === 指標 + 籌碼 兩列資訊 ===
+        vol_brief = (d.volume_note.split("（")[0]
+                     if "（" in d.volume_note else d.volume_note)
+        # 取股權
+        holder_html = ""
+        try:
+            hd = shareholders.for_code(code)
+            if hd:
+                holder_html = (
+                    f"<span style='color:#ff8080;'>大戶 "
+                    f"<b>{hd.big_pct:.1f}%</b></span> · "
+                    f"<span style='color:#ffd700;'>中戶 "
+                    f"<b>{hd.mid_pct:.1f}%</b></span> · "
+                    f"<span style='color:#7ab8ff;'>散戶 "
+                    f"<b>{hd.retail_pct:.1f}%</b></span> · "
+                    f"<span style='color:#ffa500;'>千張 "
+                    f"<b>{hd.kilo_pct:.1f}%</b></span> · "
+                    f"<span style='color:#aaa;'>股東 "
+                    f"<b style='color:#fafafa;'>{hd.total_holders:,}</b></span>"
+                )
+        except Exception:
+            pass
+
+        st.markdown(
+            f"""
+            <div style='font-size:12px; line-height:1.6; color:#bbb;
+                        margin-top:4px;'>
+              <span style='color:#888;'>均線</span> {d.ma_state} ·
+              <span style='color:#888;'>波浪</span> {d.wave_label} ·
+              <span style='color:#888;'>量</span> {vol_brief} ·
+              <span style='color:#888;'>KD</span> {row['KD']} ·
+              <span style='color:#888;'>RSI</span> {row['RSI']} ·
+              <span style='color:#888;'>法人</span> {row['法人(張)']}張
+              {' · ' + holder_html if holder_html else ''}
             </div>
-            """
-            st.markdown(info_html, unsafe_allow_html=True)
+            """,
+            unsafe_allow_html=True,
+        )
 
         pa = st.columns([2, 2, 2, 2, 1.5, 1.5])
         if d.target_price:
@@ -280,23 +371,23 @@ def render_card(row: pd.Series, rank: int):
         pa[3].metric("日均量", f"{row['日均量(張)']:,} 張")
         with pa[4]:
             st.write("")  # 對齊 metric 高度
-            watched = watchlist.contains(str(row["代號"]))
+            watched = watchlist.contains(code)
             if st.button("🌟" if watched else "⭐",
-                         key=f"fav_{rank}_{row['代號']}",
+                         key=f"{key_ns}_fav_{rank}_{code}",
                          use_container_width=True,
                          help="移除收藏" if watched else "加入收藏"):
                 if watched:
-                    watchlist.remove(str(row["代號"]))
+                    watchlist.remove(code)
                 else:
-                    watchlist.add(str(row["代號"]))
+                    watchlist.add(code)
                 st.rerun()
         with pa[5]:
             st.write("")
-            if st.button("🔎", key=f"detail_{rank}_{row['代號']}",
+            if st.button("🔎", key=f"{key_ns}_detail_{rank}_{code}",
                          use_container_width=True, type="primary",
                          help="完整分析"):
                 st.session_state._mode_override = "🔎 個股查詢"
-                st.session_state.stock_code = str(row["代號"])
+                st.session_state.stock_code = code
                 st.session_state.auto_analyze = True
                 st.rerun()
 
@@ -573,17 +664,17 @@ if mode == "🎯 今日選股":
         "📋 全部（表格）",
     ])
 
-    def _render_grid(df_):
+    def _render_grid(df_, ns: str = "card"):
         """2 欄網格渲染卡片：1 2 / 3 4 / 5 6..."""
         rows = df_.reset_index(drop=True)
         n = len(rows)
         for i in range(0, n, 2):
             col_l, col_r = st.columns(2, gap="small")
             with col_l:
-                render_card(rows.iloc[i], i + 1)
+                render_card(rows.iloc[i], i + 1, key_ns=ns)
             if i + 1 < n:
                 with col_r:
-                    render_card(rows.iloc[i + 1], i + 2)
+                    render_card(rows.iloc[i + 1], i + 2, key_ns=ns)
 
     with tab_imm:
         st.caption("🎯 **現價位於建議進場區間**的標的 — 不用等拉回或反彈，依朱式戰法立刻可執行")
@@ -595,24 +686,24 @@ if mode == "🎯 今日選股":
             if imm_bull.empty:
                 st.info("⚠️ 目前無現價位於進場區的多方標的；考慮等拉回或查看 做多 Top。")
             else:
-                _render_grid(imm_bull)
+                _render_grid(imm_bull, ns="imm_b")
         with sub_s:
             if imm_bear.empty:
                 st.info("⚠️ 目前無現價位於進場區的空方標的；考慮等反彈或查看 做空 Top。")
             else:
-                _render_grid(imm_bear)
+                _render_grid(imm_bear, ns="imm_s")
 
     with tab_long:
         if long_df.empty:
             st.warning("無符合條件的做多標的")
         else:
-            _render_grid(long_df)
+            _render_grid(long_df, ns="long")
 
     with tab_short:
         if short_df.empty:
             st.warning("無符合條件的做空標的")
         else:
-            _render_grid(short_df)
+            _render_grid(short_df, ns="short")
 
     with tab_all:
         if result["full"].empty:
@@ -1007,9 +1098,11 @@ elif mode == "⭐ 收藏清單":
     with st.spinner(f"抓取 {len(codes)} 檔即時報價 + 計算指標…"):
         quotes = live.quotes(codes)
 
-    # 分類：進場區 / 非進場區
-    in_zone: list[dict] = []
-    other: list[dict] = []
+    # 逐檔分析 → 建構 render_card 可用的 row dict
+    from analyzer import candlestick as _cs
+    rows_in_zone: list[dict] = []
+    rows_other: list[dict] = []
+    errors: list[tuple[str, str]] = []
 
     progress = st.progress(0.0)
     for idx, code in enumerate(codes):
@@ -1021,144 +1114,72 @@ elif mode == "⭐ 收藏清單":
             if q:
                 raw = live.overlay_today(raw, q)
             d = diagnosis.diagnose(raw, code=code)
-            info = ind_df[ind_df["code"] == code]
-            name = info.iloc[0]["short_name"] if not info.empty else code
-            ind_name = info.iloc[0]["industry"] if not info.empty else "—"
-            price_now = float(raw["close"].iloc[-1])
-            chg_pct = ((price_now / raw["close"].iloc[-2] - 1) * 100
-                       if len(raw) >= 2 else 0.0)
+            info_row = ind_df[ind_df["code"] == code]
+            nm = info_row.iloc[0]["short_name"] if not info_row.empty else code
+            last = raw.iloc[-1]
+            prev_close = float(raw["close"].iloc[-2]) \
+                if len(raw) >= 2 else float(last["close"])
+            chg_pct = ((float(last["close"]) / prev_close - 1) * 100
+                       if prev_close else 0.0)
 
             in_entry = False
             if d.entry_zone:
                 lo, hi = d.entry_zone
-                if lo <= price_now <= hi:
+                if lo <= float(last["close"]) <= hi:
                     in_entry = True
 
-            bucket = {
-                "code": code, "name": name, "industry": ind_name,
-                "price": price_now, "chg_pct": chg_pct,
-                "score": d.score, "stance": d.stance, "action": d.action,
-                "entry_zone": d.entry_zone,
-                "target": d.target_price, "stop": d.short_stop,
-                "in_zone": in_entry, "diag": d,
+            # 建構 row 供 render_card 使用（欄位對照 screener 的輸出）
+            row = {
+                "代號": code,
+                "名稱": nm,
+                "收盤": round(float(last["close"]), 2),
+                "漲跌%": round(chg_pct, 2),
+                "分數": d.score,
+                "KD": f"{last['k']:.0f}/{last['d']:.0f}",
+                "RSI": round(float(last["rsi"]), 1),
+                "法人(張)": (f"{d.institutional_info['total_net'] // 1000:+,}"
+                             if d.institutional_info else "—"),
+                "融資/券": ("融資±" if not d.margin_info else
+                           f"資{d.margin_info['margin_change_pct']:+.1f}%"),
+                "日均量(張)": int(raw["volume"].tail(20).mean() / 1000),
+                "Hurst": round(d.econ.hurst, 2) if d.econ else None,
+                "費波": (d.fib.nearest.name if (d.fib and d.fib.nearest
+                         and d.fib.nearest_distance_pct <= 2.5) else "—"),
+                "_df_tail": raw.tail(90).copy(),
+                "_diag": d,
+                "_patterns_hist": _cs.scan_history(raw, lookback=60),
+                "_in_entry_zone": in_entry,
             }
-            (in_zone if in_entry else other).append(bucket)
+            (rows_in_zone if in_entry else rows_other).append(row)
         except Exception as e:
-            other.append({"code": code, "name": code, "error": str(e)})
+            errors.append((code, str(e)[:80]))
     progress.empty()
 
-    # ---- 警示區：觸發進場的股票 ----
-    if in_zone:
-        st.success(f"🚨 **{len(in_zone)} 檔已達建議進場區間** — 可考慮佈局")
-        for b in in_zone:
-            lo, hi = b["entry_zone"]
-            st.markdown(
-                f"""
-                <div style='padding:12px 18px; margin:8px 0;
-                            border:2px solid #ffdd00;
-                            border-radius:10px;
-                            background:linear-gradient(90deg,
-                                rgba(255,221,0,0.12), rgba(255,221,0,0));
-                            box-shadow:0 0 14px rgba(255,221,0,0.28);'>
-                  <div style='display:flex; justify-content:space-between;
-                              align-items:baseline; flex-wrap:wrap;'>
-                    <div>
-                      <span style='font-size:18px; font-weight:700;'>
-                        💡 {b['name']} ({b['code']})
-                      </span>
-                      <span style='color:#aaa; margin-left:8px; font-size:13px;'>
-                        · {b['industry']}
-                      </span>
-                    </div>
-                    <div>
-                      <span style='font-size:24px; font-weight:800;
-                              color:{"#e55353" if b["chg_pct"]>=0 else "#3dbd6e"};'>
-                        {b['price']:.2f}
-                      </span>
-                      <span style='margin-left:6px;
-                              color:{"#e55353" if b["chg_pct"]>=0 else "#3dbd6e"};'>
-                        {'+' if b['chg_pct']>=0 else ''}{b['chg_pct']:.2f}%
-                      </span>
-                    </div>
-                  </div>
-                  <div style='margin-top:8px; font-size:13px; color:#ddd;'>
-                    🟡 <b>進場區 {lo:.2f} ~ {hi:.2f}</b> 已觸及　·
-                    分數 <b>{b['score']:+d}</b>　·　建議 <b>{b['action']}</b>
-                    {' · 目標 ' + format(b['target'], '.2f') if b.get('target') else ''}
-                    {' · 停損 ' + format(b['stop'], '.2f') if b.get('stop') else ''}
-                  </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-            c_a, c_b = st.columns([5, 1])
-            with c_b:
-                if st.button("🔎 分析", key=f"wlz_{b['code']}",
-                             use_container_width=True):
-                    st.session_state._mode_override = "🔎 個股查詢"
-                    st.session_state.stock_code = b["code"]
-                    st.session_state.auto_analyze = True
-                    st.rerun()
+    # ---- 已達進場區警示（突出顯示）----
+    if rows_in_zone:
+        st.success(f"🚨 **{len(rows_in_zone)} 檔已達建議進場區間** — 可考慮佈局")
+        # 金色外框包裝
+        st.markdown(
+            "<style>.entry-zone-card {border:2px solid #ffdd00 !important; "
+            "box-shadow:0 0 14px rgba(255,221,0,0.28);}</style>",
+            unsafe_allow_html=True,
+        )
+        for i, r in enumerate(rows_in_zone):
+            render_card(pd.Series(r), i + 1, key_ns="wl_zone")
 
     # ---- 其他收藏 ----
-    st.markdown("### 📋 全部收藏")
-    cols = st.columns(3)
-    for i, b in enumerate(other + in_zone):
-        with cols[i % 3]:
-            with st.container(border=True):
-                if "error" in b:
-                    st.error(f"{b['code']} 取得失敗：{b['error'][:40]}")
-                    if st.button("❌ 移除", key=f"rm_err_{b['code']}",
-                                 use_container_width=True):
-                        watchlist.remove(b["code"])
-                        st.rerun()
-                    continue
-                chg_color = "#e55353" if b["chg_pct"] >= 0 else "#3dbd6e"
-                border = ("border:2px solid #ffdd00; box-shadow:0 0 10px "
-                          "rgba(255,221,0,0.4);") if b["in_zone"] else ""
-                st.markdown(
-                    f"""
-                    <div style='padding:4px; {border}'>
-                      <div style='font-size:14px; font-weight:700;'>
-                        {b['name']} ({b['code']})
-                        {"🟡" if b['in_zone'] else ""}
-                      </div>
-                      <div style='color:#888; font-size:11px;'>
-                        {b.get('industry', '—')}
-                      </div>
-                      <div style='margin:6px 0;'>
-                        <span style='font-size:22px; font-weight:800;
-                                color:{chg_color};'>
-                          {b['price']:.2f}
-                        </span>
-                        <span style='font-size:13px; color:{chg_color};
-                                margin-left:4px;'>
-                          {'+' if b['chg_pct']>=0 else ''}{b['chg_pct']:.2f}%
-                        </span>
-                      </div>
-                      <div style='font-size:12px;'>
-                        分數 <b>{b['score']:+d}</b> · {b['stance']}<br>
-                        建議：<b>{b['action']}</b>
-                      </div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-                sub_a, sub_b = st.columns(2)
-                with sub_a:
-                    if st.button("🔎", key=f"v_{b['code']}",
-                                 use_container_width=True,
-                                 help="完整分析"):
-                        st.session_state._mode_override = "🔎 個股查詢"
-                        st.session_state.stock_code = b["code"]
-                        st.session_state.auto_analyze = True
-                        st.rerun()
-                with sub_b:
-                    if st.button("❌", key=f"rm_{b['code']}",
-                                 use_container_width=True,
-                                 help="移除收藏"):
-                        watchlist.remove(b["code"])
-                        st.rerun()
+    if rows_other:
+        st.markdown(f"### 📋 其他收藏（{len(rows_other)} 檔）")
+        for i, r in enumerate(rows_other):
+            render_card(pd.Series(r), i + 1, key_ns="wl_other")
+
+    if errors:
+        with st.expander(f"⚠️ {len(errors)} 檔取得失敗"):
+            for c, e in errors:
+                st.error(f"{c}: {e}")
+                if st.button(f"移除 {c}", key=f"wlerr_{c}"):
+                    watchlist.remove(c)
+                    st.rerun()
 
 
 # ============================================================

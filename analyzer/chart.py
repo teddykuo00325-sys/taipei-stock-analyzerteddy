@@ -569,6 +569,209 @@ def build(df: pd.DataFrame, title: str = "", patterns=None,
     return fig
 
 
+def build_card(df: pd.DataFrame, height: int = 480,
+               supports: list[float] | None = None,
+               resistances: list[float] | None = None,
+               entry_zone: tuple[float, float] | None = None,
+               target_price: float | None = None,
+               short_stop: float | None = None,
+               patterns_hist=None,
+               title: str = "") -> go.Figure:
+    """中型卡片圖：K + Vol + KD 三副圖，供今日選股 / 收藏清單使用."""
+    fig = make_subplots(
+        rows=3, cols=1, shared_xaxes=True,
+        row_heights=[0.62, 0.15, 0.23], vertical_spacing=0.02,
+    )
+
+    # --- K + MA ---
+    fig.add_trace(go.Candlestick(
+        x=df.index, open=df["open"], high=df["high"],
+        low=df["low"], close=df["close"], showlegend=False,
+        increasing=dict(line=dict(color="#d62728"), fillcolor="#d62728"),
+        decreasing=dict(line=dict(color="#2ca02c"), fillcolor="#2ca02c"),
+    ), row=1, col=1)
+    for p, c in [(5, "#ff7f0e"), (10, "#1f77b4"), (20, "#9467bd")]:
+        col = f"ma{p}"
+        if col in df.columns:
+            fig.add_trace(go.Scatter(
+                x=df.index, y=df[col], mode="lines", name=f"MA{p}",
+                line=dict(color=c, width=1),
+                showlegend=False, hoverinfo="skip",
+            ), row=1, col=1)
+
+    # 多級支撐
+    for p in (supports or [])[:3]:
+        fig.add_hline(
+            y=p, line_dash="dash",
+            line_color="rgba(100,180,255,0.55)", line_width=0.9,
+            annotation_text=f"支 {p:.2f}",
+            annotation_position="right",
+            annotation_font_color="#7ab8ff",
+            annotation_font_size=8,
+            row=1, col=1,
+        )
+    # 多級壓力
+    for p in (resistances or [])[:3]:
+        fig.add_hline(
+            y=p, line_dash="dash",
+            line_color="rgba(255,180,100,0.55)", line_width=0.9,
+            annotation_text=f"壓 {p:.2f}",
+            annotation_position="right",
+            annotation_font_color="#ffb464",
+            annotation_font_size=8,
+            row=1, col=1,
+        )
+    # 進場區
+    if entry_zone:
+        lo_e, hi_e = entry_zone
+        fig.add_hrect(
+            y0=lo_e, y1=hi_e,
+            fillcolor="rgba(255,255,0,0.12)",
+            layer="below", line_width=0,
+            row=1, col=1,
+        )
+    # 目標 / 停損
+    if target_price:
+        fig.add_hline(
+            y=target_price, line_dash="solid",
+            line_color="rgba(255,165,0,0.85)", line_width=1.5,
+            annotation_text=f"🎯 {target_price:.2f}",
+            annotation_position="top left",
+            annotation_font_color="#ffa500",
+            annotation_font_size=10,
+            row=1, col=1,
+        )
+    if short_stop:
+        fig.add_hline(
+            y=short_stop, line_dash="longdashdot",
+            line_color="rgba(44,160,44,0.9)", line_width=1.5,
+            annotation_text=f"🛑 {short_stop:.2f}",
+            annotation_position="bottom left",
+            annotation_font_color="#2ca02c",
+            annotation_font_size=10,
+            row=1, col=1,
+        )
+
+    # K 線型態標記（最近 3 個有字）
+    if patterns_hist:
+        tail_idx = max(len(df) - 60, 0)
+        for cand_idx, candles in patterns_hist[-3:]:
+            if cand_idx < tail_idx or cand_idx >= len(df):
+                continue
+            dt = df.index[cand_idx]
+            for c in candles[:1]:
+                is_bull = c.signal == "bull"
+                y = (df["low"].iloc[cand_idx] * 0.98 if is_bull
+                     else df["high"].iloc[cand_idx] * 1.02)
+                color = ("#d62728" if is_bull
+                         else "#2ca02c" if c.signal == "bear" else "#aaa")
+                sym = ("triangle-up" if is_bull
+                       else "triangle-down" if c.signal == "bear"
+                       else "diamond")
+                fig.add_trace(go.Scatter(
+                    x=[dt], y=[y], mode="markers+text",
+                    marker=dict(size=10, color=color, symbol=sym),
+                    text=[c.name], textposition="bottom center"
+                    if is_bull else "top center",
+                    textfont=dict(size=9, color=color),
+                    hovertext=f"<b>{c.name}</b><br>{c.note}",
+                    hoverinfo="text", showlegend=False,
+                ), row=1, col=1)
+
+    # --- Volume + VMA20 ---
+    vol_color = ["#d62728" if c >= o else "#2ca02c"
+                 for c, o in zip(df["close"], df["open"])]
+    fig.add_trace(go.Bar(
+        x=df.index, y=df["volume"], marker_color=vol_color,
+        showlegend=False, name="Vol",
+    ), row=2, col=1)
+    if "vol_ma20" in df.columns:
+        fig.add_trace(go.Scatter(
+            x=df.index, y=df["vol_ma20"], mode="lines",
+            line=dict(color="#ffd700", width=1, dash="dash"),
+            showlegend=False, hoverinfo="skip", name="VMA20",
+        ), row=2, col=1)
+        # 爆量標記
+        burst = df["volume"] > df["vol_ma20"] * 2
+        if burst.any():
+            fig.add_trace(go.Scatter(
+                x=df.index[burst], y=df["volume"][burst],
+                mode="markers", marker=dict(
+                    symbol="star", size=8, color="#ffd700",
+                    line=dict(color="#fff", width=0.6)),
+                showlegend=False, hoverinfo="skip", name="爆量",
+            ), row=2, col=1)
+
+    # --- KD + 背景 + 交叉 ---
+    if "k" in df.columns:
+        fig.add_hrect(y0=80, y1=100,
+                      fillcolor="rgba(214,39,40,0.12)",
+                      layer="below", line_width=0, row=3, col=1)
+        fig.add_hrect(y0=0, y1=20,
+                      fillcolor="rgba(44,160,44,0.12)",
+                      layer="below", line_width=0, row=3, col=1)
+        fig.add_trace(go.Scatter(
+            x=df.index, y=df["k"], mode="lines",
+            line=dict(color="#1f77b4", width=1.2),
+            showlegend=False, name="K",
+        ), row=3, col=1)
+        fig.add_trace(go.Scatter(
+            x=df.index, y=df["d"], mode="lines",
+            line=dict(color="#ff7f0e", width=1.2),
+            showlegend=False, name="D",
+        ), row=3, col=1)
+        fig.add_hline(y=80, line_dash="dot", line_color="#666",
+                      row=3, col=1)
+        fig.add_hline(y=20, line_dash="dot", line_color="#666",
+                      row=3, col=1)
+
+        # 金叉死叉
+        gx, gy, dx_, dy = [], [], [], []
+        for i in range(1, len(df)):
+            pk, pd_ = df["k"].iloc[i - 1], df["d"].iloc[i - 1]
+            ck, cd_ = df["k"].iloc[i], df["d"].iloc[i]
+            if pd.isna(pk) or pd.isna(ck):
+                continue
+            if pk <= pd_ and ck > cd_:
+                gx.append(df.index[i]); gy.append(float(ck))
+            elif pk >= pd_ and ck < cd_:
+                dx_.append(df.index[i]); dy.append(float(ck))
+        if gx:
+            fig.add_trace(go.Scatter(
+                x=gx, y=gy, mode="markers",
+                marker=dict(symbol="circle", size=6, color="#ffd700",
+                            line=dict(color="#222", width=0.6)),
+                showlegend=False, hoverinfo="skip",
+            ), row=3, col=1)
+        if dx_:
+            fig.add_trace(go.Scatter(
+                x=dx_, y=dy, mode="markers",
+                marker=dict(symbol="x", size=7, color="#d62728",
+                            line=dict(color="#fff", width=0.6)),
+                showlegend=False, hoverinfo="skip",
+            ), row=3, col=1)
+
+    # Layout
+    fig.update_layout(
+        title=dict(text=title, font=dict(size=11)) if title else None,
+        height=height,
+        margin=dict(l=6, r=50, t=10 if title else 4, b=4),
+        xaxis_rangeslider_visible=False,
+        hovermode="x unified",
+        dragmode="pan",
+        plot_bgcolor="rgba(0,0,0,0)",
+    )
+    fig.update_xaxes(
+        rangebreaks=[dict(bounds=["sat", "mon"])],
+        showticklabels=False,
+    )
+    # 只在最底部 subplot 顯示日期
+    fig.update_xaxes(showticklabels=True, row=3, col=1,
+                     tickfont=dict(size=9))
+    fig.update_yaxes(tickfont=dict(size=9))
+    return fig
+
+
 def mini(df: pd.DataFrame, height: int = 160,
          patterns_hist=None) -> go.Figure:
     """迷你 K 線圖 — 供卡片式清單使用.
