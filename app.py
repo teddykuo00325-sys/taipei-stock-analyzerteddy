@@ -611,7 +611,7 @@ if mode == "🎯 今日選股":
             if st.button("☁️ 立即備份到 GitHub",
                          key="ohlcv_backup",
                          use_container_width=True):
-                with st.spinner("上傳中…"):
+                with st.spinner("壓縮 + 上傳中…"):
                     ok, msg = price_cache.backup_now()
                 if ok:
                     st.success(f"✅ {msg}")
@@ -620,7 +620,7 @@ if mode == "🎯 今日選股":
             if st.button("⬇️ 從 GitHub 還原",
                          key="ohlcv_restore",
                          use_container_width=True):
-                with st.spinner("下載中…"):
+                with st.spinner("下載 + 解壓中…"):
                     from analyzer.price_cache import DB_PATH as _PDB
                     ok, msg = storage.download_db(_PDB,
                                                    repo_path="data/ohlcv.db")
@@ -629,6 +629,20 @@ if mode == "🎯 今日選股":
                     st.rerun()
                 else:
                     st.warning(f"⚠️ {msg}")
+            # Purge 按鈕：DB 太大時清舊資料
+            if _pc_stats["db_size_kb"] > 30 * 1024:
+                st.warning(
+                    f"⚠️ DB {_pc_stats['db_size_kb'] / 1024:.1f} MB "
+                    f"接近 GitHub 上傳上限"
+                )
+            if st.button("🗑️ 清除 > 1 年舊資料",
+                         key="ohlcv_purge",
+                         use_container_width=True,
+                         help="只保留近 1 年 K 線，VACUUM 壓縮 DB"):
+                with st.spinner("清理中…"):
+                    n = price_cache.purge_older_than(days=365)
+                st.success(f"✅ 已刪除 {n} 列舊資料")
+                st.rerun()
         elif storage.is_cloud():
             st.caption("⚠️ 雲端未設 secrets，重啟會遺失歷史")
         else:

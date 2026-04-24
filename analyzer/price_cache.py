@@ -372,6 +372,45 @@ def stats() -> dict:
     }
 
 
+def purge_older_than(days: int = 365) -> int:
+    """刪除超過 N 日的 K 線資料；回傳刪除筆數."""
+    from datetime import date as _date, timedelta as _td
+    cutoff = (_date.today() - _td(days=days)).isoformat()
+    with _lock:
+        with _conn() as c:
+            n = c.execute("DELETE FROM ohlcv WHERE date < ?",
+                          (cutoff,)).rowcount
+        # VACUUM 需獨立連線
+        try:
+            v = sqlite3.connect(DB_PATH, isolation_level=None)
+            v.execute("VACUUM")
+            v.close()
+        except Exception:
+            pass
+    return n or 0
+
+
+def purge_stocks_not_in(codes: list[str]) -> int:
+    """刪除不在 codes 清單中的股票（清理不常看的冷門股）."""
+    codes = [_bare(c) for c in codes]
+    if not codes:
+        return 0
+    placeholders = ",".join("?" * len(codes))
+    with _lock:
+        with _conn() as c:
+            n = c.execute(
+                f"DELETE FROM ohlcv WHERE code NOT IN ({placeholders})",
+                codes,
+            ).rowcount
+        try:
+            v = sqlite3.connect(DB_PATH, isolation_level=None)
+            v.execute("VACUUM")
+            v.close()
+        except Exception:
+            pass
+    return n or 0
+
+
 # ---------------------------------------------------------------
 # GitHub 備份 (選配：需設定 secrets)
 # ---------------------------------------------------------------

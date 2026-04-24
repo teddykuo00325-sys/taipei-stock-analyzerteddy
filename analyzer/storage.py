@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import base64
+import gzip
 import logging
 import os
 from pathlib import Path
@@ -101,41 +102,87 @@ def _get_sha(c: dict) -> str | None:
 
 def download_db(local_path: Path,
                 repo_path: str | None = None) -> tuple[bool, str]:
-    """從 GitHub 下載 DB 檔至 local_path. Return (success, message)."""
+    """從 GitHub 下載 DB 檔至 local_path；自動偵測 .gz 並解壓."""
     c = _cfg_for(repo_path) if repo_path else _cfg()
     if not is_configured():
         return False, "GitHub 持久化未設定"
-    try:
-        r = requests.get(_content_url(c),
-                         headers=_headers(c["token"]),
-                         params={"ref": c["branch"]},
-                         timeout=20)
-        if r.status_code == 404:
-            return False, "GitHub 上尚無 DB 檔（第一次執行）"
-        if r.status_code != 200:
-            return False, f"下載失敗 HTTP {r.status_code}"
-        content_b64 = r.json().get("content", "")
-        if not content_b64:
-            return False, "下載失敗：空內容"
-        data = base64.b64decode(content_b64)
-        local_path.parent.mkdir(parents=True, exist_ok=True)
-        local_path.write_bytes(data)
-        return True, f"已下載 {len(data)} bytes"
-    except Exception as e:
-        return False, f"下載例外：{e}"
+
+    # 先試 .gz 版本，不存在再試原始
+    candidates = []
+    base = c["db_path"]
+    if not base.endswith(".gz"):
+        candidates.append(dict(c, db_path=base + ".gz"))
+    candidates.append(c)
+
+    last_err = "—"
+    for cfg_try in candidates:
+        try:
+            r = requests.get(_content_url(cfg_try),
+                             headers=_headers(cfg_try["token"]),
+                             params={"ref": cfg_try["branch"]},
+                             timeout=30)
+            if r.status_code == 404:
+                last_err = "not found"
+                continue
+            if r.status_code != 200:
+                last_err = f"HTTP {r.status_code}"
+                continue
+            content_b64 = r.json().get("content", "")
+            if not content_b64:
+                last_err = "empty"
+                continue
+            data = base64.b64decode(content_b64)
+            is_gz = cfg_try["db_path"].endswith(".gz")
+            if is_gz:
+                data = gzip.decompress(data)
+            local_path.parent.mkdir(parents=True, exist_ok=True)
+            local_path.write_bytes(data)
+            return True, (f"已下載 {len(data) / 1024:.0f} KB"
+                          + (" (解壓後)" if is_gz else ""))
+        except Exception as e:
+            last_err = str(e)[:60]
+            continue
+
+    return False, f"下載失敗：{last_err}"
+
+
+MAX_API_BYTES = 45 * 1024 * 1024   # ~45 MB 保守上限（API 實際 ~100MB 但 base64 overhead）
 
 
 def upload_db(local_path: Path,
               message: str = "auto: update etf.db",
-              repo_path: str | None = None) -> tuple[bool, str]:
-    """上傳 DB 至 GitHub (覆蓋)."""
+              repo_path: str | None = None,
+              auto_compress: bool = True) -> tuple[bool, str]:
+    """上傳 DB 至 GitHub (覆蓋).
+
+    檔案 > 5 MB 時自動 gzip 壓縮成 .db.gz 上傳.
+    """
     c = _cfg_for(repo_path) if repo_path else _cfg()
     if not is_configured():
         return False, "GitHub 持久化未設定"
     if not local_path.exists():
         return False, f"找不到本地檔案 {local_path}"
     try:
-        data = local_path.read_bytes()
+        raw = local_path.read_bytes()
+        orig_size = len(raw)
+
+        # 大於 5 MB 自動 gzip，否則直接上傳
+        if auto_compress and orig_size > 5 * 1024 * 1024:
+            data = gzip.compress(raw, compresslevel=6)
+            compressed = True
+            # 調整上傳路徑 → .db.gz
+            if not c["db_path"].endswith(".gz"):
+                c = dict(c)
+                c["db_path"] = c["db_path"] + ".gz"
+        else:
+            data = raw
+            compressed = False
+
+        if len(data) > MAX_API_BYTES:
+            return False, (f"檔案壓縮後仍 {len(data) / 1e6:.1f} MB，"
+                           f"超過 GitHub Contents API 限制 ~45 MB；"
+                           f"請執行 purge 縮減舊資料")
+
         b64 = base64.b64encode(data).decode()
         sha = _get_sha(c)
         payload = {
@@ -148,9 +195,11 @@ def upload_db(local_path: Path,
         r = requests.put(_content_url(c),
                          headers=_headers(c["token"]),
                          json=payload,
-                         timeout=30)
+                         timeout=60)
         if r.status_code in (200, 201):
-            return True, f"已上傳 {len(data) / 1024:.1f} KB"
+            mode = "gzip" if compressed else "raw"
+            return True, (f"已上傳 {len(data) / 1024:.0f} KB ({mode}) · "
+                          f"原始 {orig_size / 1024:.0f} KB")
         return False, f"上傳失敗 HTTP {r.status_code}: {r.text[:200]}"
     except Exception as e:
         return False, f"上傳例外：{e}"
