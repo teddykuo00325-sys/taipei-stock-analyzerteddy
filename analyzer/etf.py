@@ -114,12 +114,19 @@ def save_holdings(etf_code: str, date_str: str, holdings: list[Holding]) -> None
 def purge_old(days: int = 90) -> int:
     """刪除超過 N 天的持股 / AUM 資料 (預設保留 90 日). 回傳刪除筆數."""
     cutoff = (date.today() - timedelta(days=days)).isoformat()
-    with _db_lock, _conn() as c:
-        n1 = c.execute("DELETE FROM etf_holdings WHERE date < ?",
-                       (cutoff,)).rowcount
-        n2 = c.execute("DELETE FROM etf_aum WHERE date < ?",
-                       (cutoff,)).rowcount
-        c.execute("VACUUM")
+    with _db_lock:
+        with _conn() as c:
+            n1 = c.execute("DELETE FROM etf_holdings WHERE date < ?",
+                           (cutoff,)).rowcount
+            n2 = c.execute("DELETE FROM etf_aum WHERE date < ?",
+                           (cutoff,)).rowcount
+        # VACUUM 須在 transaction 外，獨立連線執行
+        try:
+            vac = sqlite3.connect(DB_PATH, isolation_level=None)
+            vac.execute("VACUUM")
+            vac.close()
+        except Exception:
+            pass
     return (n1 or 0) + (n2 or 0)
 
 
