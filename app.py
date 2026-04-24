@@ -69,6 +69,63 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# ============================================================
+# 🇹🇼 頂部指數列 — 加權 / 櫃買 / 台指期日盤 / 夜盤 (5 分鐘快取)
+# ============================================================
+def render_index_header():
+    try:
+        idx = marketdata.fetch_indices()
+    except Exception:
+        idx = {}
+    upd = marketdata.idx_last_update()
+    title_col, banner_col = st.columns([2.5, 4])
+    with title_col:
+        st.markdown(
+            f"<h2 style='margin:0; padding:0;'>"
+            f"Teddy中央印製廠_台北股市分析器 "
+            f"<span style='color:#ffd700;'>- 掙大錢 !</span></h2>",
+            unsafe_allow_html=True,
+        )
+    with banner_col:
+        if not idx:
+            st.markdown(
+                "<div style='padding-top:10px; color:#888; text-align:right;'>"
+                "（指數資料暫不可用）</div>",
+                unsafe_allow_html=True,
+            )
+            return
+        keys = ("twse", "otc", "tx_day", "tx_night")
+        parts = []
+        for k in keys:
+            q = idx.get(k)
+            if not q or q.last is None:
+                continue
+            chg = q.change or 0
+            pct = q.change_pct or 0
+            color = "#e55353" if chg > 0 else "#3dbd6e" if chg < 0 else "#aaa"
+            arrow = "▲" if chg > 0 else "▼" if chg < 0 else "="
+            parts.append(
+                f"<div style='display:inline-block; margin:0 8px; "
+                f"padding:4px 10px; border-left:2px solid {color};'>"
+                f"<span style='color:#aaa; font-size:11px;'>{q.label}</span><br>"
+                f"<span style='font-size:15px; font-weight:700; color:{color};'>"
+                f"{q.last:,.2f}</span>&nbsp;"
+                f"<span style='color:{color}; font-size:11px;'>"
+                f"{arrow} {chg:+.2f} ({pct:+.2f}%)</span>"
+                f"</div>"
+            )
+        parts.append(
+            f"<div style='display:inline-block; color:#666; "
+            f"font-size:10px; margin-left:4px; vertical-align:bottom;'>"
+            f"⏱ {upd}</div>"
+        )
+        st.markdown(
+            f"<div style='text-align:right; padding-top:2px;'>"
+            f"{''.join(parts)}</div>",
+            unsafe_allow_html=True,
+        )
+
+
 # === 阻擋 Chrome 自動翻譯（透過 iframe 操作 parent document）===
 import streamlit.components.v1 as _components
 _components.html("""
@@ -368,7 +425,7 @@ if mode == "🎯 今日選股":
 
     render_market_sidebar()
 
-    st.title("Teddy中央印製廠_台北股市分析器 - 掙大錢 !")
+    render_index_header()
     st.caption(f"🎯 今日選股　·　全體上市　·　20 日均量 > {min_vol} 張　·　做多/做空各前 {top_n} 檔")
 
     # --- Session state 保留結果 ---
@@ -557,7 +614,7 @@ if mode == "🎯 今日選股":
 # 📈 多股比較
 # ============================================================
 elif mode == "📈 多股比較":
-    st.title("Teddy中央印製廠_台北股市分析器 - 掙大錢 !")
+    render_index_header()
     st.caption("📈 多股比較　·　疊加 2~5 檔標的相對走勢 + 排行 + 相關性")
 
     ind_df_cmp = industry.snapshot()
@@ -858,7 +915,7 @@ elif mode == "📈 多股比較":
 # ⭐ 收藏清單
 # ============================================================
 elif mode == "⭐ 收藏清單":
-    st.title("Teddy中央印製廠_台北股市分析器 - 掙大錢 !")
+    render_index_header()
     st.caption("⭐ 收藏清單　·　追蹤常看股票、即時進場區警示")
 
     codes = watchlist.get()
@@ -1053,7 +1110,7 @@ elif mode == "⭐ 收藏清單":
 # 🔥 資金流向 — 產業族群強弱排行
 # ============================================================
 elif mode == "🔥 資金流向":
-    st.title("Teddy中央印製廠_台北股市分析器 - 掙大錢 !")
+    render_index_header()
     st.caption("🔥 資金流向　·　依產業別匯總漲跌與成交值，追蹤族群輪動")
 
     # === 資料源切換 ===
@@ -1215,7 +1272,7 @@ elif mode == "🔥 資金流向":
 elif mode == "📊 主動式ETF":
     render_market_sidebar()
 
-    st.title("Teddy中央印製廠_台北股市分析器 - 掙大錢 !")
+    render_index_header()
     st.caption("📊 主動式 ETF 持股追蹤 — 依資產規模 (AUM) 自動選出前 5 大（台股專注）")
 
     # === 持久化：首次載入自 GitHub 拉 DB ===
@@ -1541,7 +1598,7 @@ else:
 
     render_market_sidebar()
 
-    st.title("Teddy中央印製廠_台北股市分析器 - 掙大錢 !")
+    render_index_header()
     st.caption("🔎 個股查詢")
 
     # 從今日選股跳轉時自動觸發

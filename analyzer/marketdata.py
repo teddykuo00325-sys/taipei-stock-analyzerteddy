@@ -47,6 +47,7 @@ class Quote:
 # ---------- Caches ----------
 _intl_cache: dict = {"t": 0.0, "v": {}}
 _gck_cache: dict = {"t": 0.0, "v": {}}
+_idx_cache: dict = {"t": 0.0, "v": {}}
 
 
 def intl_last_update() -> str:
@@ -64,12 +65,141 @@ def gck_last_update() -> str:
     return _dt.datetime.fromtimestamp(_gck_cache["t"]).strftime("%H:%M")
 
 
+def idx_last_update() -> str:
+    import datetime as _dt
+    if _idx_cache["t"] == 0:
+        return "—"
+    return _dt.datetime.fromtimestamp(_idx_cache["t"]).strftime("%H:%M")
+
+
 def invalidate() -> None:
     """強制清除快取（立即更新時呼叫）."""
     _intl_cache["v"] = {}
     _intl_cache["t"] = 0.0
     _gck_cache["v"] = {}
     _gck_cache["t"] = 0.0
+    _idx_cache["v"] = {}
+    _idx_cache["t"] = 0.0
+
+
+# ---------- 台股指數 + 台指期 ----------
+TWSE_MIS = "https://mis.twse.com.tw/stock/api/getStockInfo.jsp"
+TAIFEX_URL = "https://mis.taifex.com.tw/futures/api/getQuoteList"
+
+
+@dataclass
+class IndexQuote:
+    label: str
+    last: float | None
+    prev: float | None
+    change: float | None
+    change_pct: float | None
+    time: str
+
+
+def _safe_float(v):
+    try:
+        if v in (None, "", "-"):
+            return None
+        return float(v)
+    except Exception:
+        return None
+
+
+def _fetch_twse_indices() -> dict:
+    """加權 + 櫃買指數 (TWSE MIS)."""
+    try:
+        import requests as _rq
+        r = _rq.get(TWSE_MIS,
+                    params={"ex_ch": "tse_t00.tw_|otc_o00.tw_",
+                            "json": "1", "delay": "0"},
+                    headers={"User-Agent": "Mozilla/5.0",
+                             "Referer": "https://mis.twse.com.tw/stock/fibest.jsp"},
+                    timeout=6)
+        r.raise_for_status()
+        j = r.json()
+    except Exception:
+        return {}
+    out = {}
+    for row in j.get("msgArray", []):
+        last = _safe_float(row.get("z"))
+        prev = _safe_float(row.get("y"))
+        chg = (last - prev) if (last is not None and prev is not None) else None
+        pct = (chg / prev * 100) if (chg is not None and prev) else None
+        label = "🇹🇼 加權指數" if row.get("c") == "t00" \
+            else "🇹🇼 櫃買指數" if row.get("c") == "o00" \
+            else row.get("n", row.get("c"))
+        key = "twse" if row.get("c") == "t00" \
+            else "otc" if row.get("c") == "o00" else row.get("c")
+        out[key] = IndexQuote(
+            label=label, last=last, prev=prev,
+            change=chg, change_pct=pct,
+            time=row.get("t", ""),
+        )
+    return out
+
+
+def _fetch_taifex() -> dict:
+    """台指期日盤 + 夜盤 (近月合約) via TAIFEX MIS POST."""
+    try:
+        import requests as _rq
+        r = _rq.post(TAIFEX_URL,
+                     json={"objType": "1"},
+                     headers={"User-Agent": "Mozilla/5.0",
+                              "Content-Type": "application/json",
+                              "Referer": "https://mis.taifex.com.tw/futures/"},
+                     timeout=6)
+        r.raise_for_status()
+        j = r.json()
+    except Exception:
+        return {}
+
+    qs = j.get("RtData", {}).get("QuoteList", [])
+    day = None
+    night = None
+    for q in qs:
+        sid = q.get("SymbolID", "")
+        # 近月合約 = 第一個找到的 -F / -M 且 SymbolID 不是 TXF-F/S/P
+        if sid.startswith("TXF") and "-" in sid \
+                and not sid.startswith(("TXF-", )):
+            if sid.endswith("-F") and day is None:
+                day = q
+            elif sid.endswith("-M") and night is None:
+                night = q
+        if day and night:
+            break
+
+    out = {}
+    for key, q, label in (("tx_day", day, "📈 台指期 (日盤)"),
+                          ("tx_night", night, "🌙 台指期 (電子盤)")):
+        if not q:
+            continue
+        last = _safe_float(q.get("CLastPrice"))
+        ref = _safe_float(q.get("CRefPrice"))
+        diff = _safe_float(q.get("CDiff"))
+        pct = _safe_float(q.get("CDiffRate"))
+        t = q.get("CTime", "")
+        t_fmt = f"{t[:2]}:{t[2:4]}" if len(t) >= 4 else ""
+        out[key] = IndexQuote(
+            label=label, last=last, prev=ref,
+            change=diff, change_pct=pct,
+            time=t_fmt,
+        )
+    return out
+
+
+def fetch_indices(max_age_sec: int = 300) -> dict:
+    """整合加權 + 櫃買 + 台指期日夜盤，5 分鐘快取."""
+    now = time()
+    if _idx_cache["v"] and now - _idx_cache["t"] < max_age_sec:
+        return _idx_cache["v"]
+    out = {}
+    out.update(_fetch_twse_indices())
+    out.update(_fetch_taifex())
+    if out:
+        _idx_cache["v"] = out
+        _idx_cache["t"] = now
+    return out
 
 
 def _fetch_one(key: str) -> Quote | None:
