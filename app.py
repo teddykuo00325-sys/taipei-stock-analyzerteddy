@@ -12,7 +12,7 @@ from analyzer import (chart, data, diagnosis, etf, etf_scraper,
 
 logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 
-st.set_page_config(page_title="中央印製廠 · 台北股市分析器 · 一起掙大錢",
+st.set_page_config(page_title="Teddy中央印製廠_台北股市分析器 - 掙大錢 !",
                    page_icon="📈", layout="wide")
 
 # === 側邊欄寬度 + 手機版響應式 ===
@@ -264,10 +264,10 @@ def render_card(row: pd.Series, rank: int):
 # Sidebar
 # ============================================================
 st.sidebar.markdown(
-    "<div style='font-size:18px; font-weight:700; line-height:1.3;'>"
-    "🏛️ 中央印製廠<br>"
-    "📈 台北股市分析器<br>"
-    "<span style='color:#ffd700;'>💰 一起掙大錢</span>"
+    "<div style='font-size:17px; font-weight:700; line-height:1.35;'>"
+    "Teddy中央印製廠<br>"
+    "台北股市分析器<br>"
+    "<span style='color:#ffd700;'>- 掙大錢 !</span>"
     "</div>",
     unsafe_allow_html=True,
 )
@@ -368,7 +368,7 @@ if mode == "🎯 今日選股":
 
     render_market_sidebar()
 
-    st.title("🏛️ 中央印製廠 · 📈 台北股市分析器 · 💰 一起掙大錢")
+    st.title("Teddy中央印製廠_台北股市分析器 - 掙大錢 !")
     st.caption(f"🎯 今日選股　·　全體上市　·　20 日均量 > {min_vol} 張　·　做多/做空各前 {top_n} 檔")
 
     # --- Session state 保留結果 ---
@@ -517,7 +517,7 @@ if mode == "🎯 今日選股":
 # 📈 多股比較
 # ============================================================
 elif mode == "📈 多股比較":
-    st.title("🏛️ 中央印製廠 · 📈 台北股市分析器 · 💰 一起掙大錢")
+    st.title("Teddy中央印製廠_台北股市分析器 - 掙大錢 !")
     st.caption("📈 多股比較　·　疊加 2~5 檔標的相對走勢與相關性分析")
 
     st.sidebar.subheader("選取標的")
@@ -679,7 +679,7 @@ elif mode == "📈 多股比較":
 # ⭐ 收藏清單
 # ============================================================
 elif mode == "⭐ 收藏清單":
-    st.title("🏛️ 中央印製廠 · 📈 台北股市分析器 · 💰 一起掙大錢")
+    st.title("Teddy中央印製廠_台北股市分析器 - 掙大錢 !")
     st.caption("⭐ 收藏清單　·　追蹤常看股票、即時進場區警示")
 
     codes = watchlist.get()
@@ -874,7 +874,7 @@ elif mode == "⭐ 收藏清單":
 # 🔥 資金流向 — 產業族群強弱排行
 # ============================================================
 elif mode == "🔥 資金流向":
-    st.title("🏛️ 中央印製廠 · 📈 台北股市分析器 · 💰 一起掙大錢")
+    st.title("Teddy中央印製廠_台北股市分析器 - 掙大錢 !")
     st.caption("🔥 資金流向　·　依產業別匯總漲跌與成交值，追蹤族群輪動")
 
     # === 資料源切換 ===
@@ -1036,7 +1036,7 @@ elif mode == "🔥 資金流向":
 elif mode == "📊 主動式ETF":
     render_market_sidebar()
 
-    st.title("🏛️ 中央印製廠 · 📈 台北股市分析器 · 💰 一起掙大錢")
+    st.title("Teddy中央印製廠_台北股市分析器 - 掙大錢 !")
     st.caption("📊 主動式 ETF 持股追蹤 — 依資產規模 (AUM) 自動選出前 5 大（台股專注）")
 
     # === 持久化：首次載入自 GitHub 拉 DB ===
@@ -1317,7 +1317,7 @@ else:
 
     render_market_sidebar()
 
-    st.title("🏛️ 中央印製廠 · 📈 台北股市分析器 · 💰 一起掙大錢")
+    st.title("Teddy中央印製廠_台北股市分析器 - 掙大錢 !")
     st.caption("🔎 個股查詢")
 
     # 從今日選股跳轉時自動觸發
