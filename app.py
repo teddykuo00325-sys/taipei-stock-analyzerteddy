@@ -98,29 +98,29 @@ def render_card(row: pd.Series, rank: int):
                      f"<span style='color:#999;'>({hint})</span>")
 
     with st.container(border=True):
-        # --- 標題列（統一大小 15-16px）---
+        # --- 標題列：現價醒目 ---
         st.markdown(
             f"""
-            <div style='line-height:1.45;'>
-              <div>
-                <span style='font-size:17px; font-weight:700;'>
-                  #{rank} {row['名稱']} ({row['代號']})
-                </span>
-                <span style='font-size:15px; color:#f5c342; font-weight:600; margin-left:10px;'>
+            <div style='line-height:1.35;'>
+              <div style='font-size:13px; color:#bbb;'>
+                <b style='color:#fafafa;'>#{rank} {row['名稱']} ({row['代號']})</b>
+                <span style='margin-left:10px;'>🕒 {now_str}</span>
+              </div>
+              <div style='margin:6px 0 4px 0; display:flex; align-items:baseline; gap:12px;'>
+                <span style='font-size:13px; color:#999;'>現價</span>
+                <span style='font-size:30px; font-weight:800; color:{chg_color};
+                             letter-spacing:-0.5px;'>
                   {row['收盤']:.2f}
                 </span>
-                <span style='font-size:14px; color:{chg_color}; margin-left:6px;'>
+                <span style='font-size:18px; font-weight:700; color:{chg_color};'>
                   {chg_sign}{row['漲跌%']:.2f}%
                 </span>
-                <span style='font-size:12px; color:#888; margin-left:10px;'>
-                  🕒 {now_str}
-                </span>
               </div>
-              <div style='font-size:14px; margin-top:4px;'>
+              <div style='font-size:14px; margin-top:2px;'>
                 {score_icon} <b>分數 {d.score:+d}</b>
-                <span style='color:#888;'>·</span>
+                <span style='color:#666;'>　·　</span>
                 {ACTION_ICONS.get(d.action, '')} <b>{d.action}</b>
-                <span style='color:#888; margin-left:6px;'>·</span>
+                <span style='color:#666;'>　·　</span>
                 {entry_str}
               </div>
             </div>
