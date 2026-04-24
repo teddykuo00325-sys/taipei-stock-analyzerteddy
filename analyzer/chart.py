@@ -12,7 +12,10 @@ def build(df: pd.DataFrame, title: str = "", patterns=None,
           entry_zone=None, target_price=None,
           short_stop=None, mid_stop=None,
           display_days: int = 130,
-          show_trend_lines: bool = True) -> go.Figure:
+          show_trend_lines: bool = True,
+          multi_supports: list[float] | None = None,
+          multi_resistances: list[float] | None = None,
+          chip_history: pd.DataFrame | None = None) -> go.Figure:
     """建構多面板技術圖表.
 
     參數：
@@ -29,12 +32,24 @@ def build(df: pd.DataFrame, title: str = "", patterns=None,
     """
     patterns = patterns or []
     candle_history = candle_history or []
-    # K 線佔 65%，空出更多縱向空間
-    fig = make_subplots(
-        rows=4, cols=1, shared_xaxes=True,
-        row_heights=[0.66, 0.12, 0.11, 0.11], vertical_spacing=0.015,
-        subplot_titles=("K 線圖", "成交量", "MACD", "KD"),
-    )
+    # 如有籌碼歷史 → 5 subplot; 否則 4 subplot
+    has_chip = (chip_history is not None and not chip_history.empty
+                and len(chip_history) >= 1)
+    if has_chip:
+        fig = make_subplots(
+            rows=5, cols=1, shared_xaxes=True,
+            row_heights=[0.56, 0.11, 0.10, 0.11, 0.12],
+            vertical_spacing=0.012,
+            subplot_titles=("K 線圖", "成交量", "MACD", "KD",
+                            "籌碼 (大戶 / 散戶 %)"),
+        )
+    else:
+        fig = make_subplots(
+            rows=4, cols=1, shared_xaxes=True,
+            row_heights=[0.66, 0.12, 0.11, 0.11],
+            vertical_spacing=0.015,
+            subplot_titles=("K 線圖", "成交量", "MACD", "KD"),
+        )
 
     # --- K 線 (台股紅漲綠跌) ---
     fig.add_trace(
@@ -81,26 +96,57 @@ def build(df: pd.DataFrame, title: str = "", patterns=None,
                 row=1, col=1,
             )
 
-    # 支撐 / 壓力
+    # 主要支撐 / 壓力
     if trend:
         sup = trend.get("support")
         res = trend.get("resistance")
         if sup:
             fig.add_hline(
-                y=sup, line_dash="solid", line_color="rgba(44,160,44,0.55)",
-                line_width=1.5,
-                annotation_text=f"支撐 {sup:.2f}",
+                y=sup, line_dash="solid", line_color="rgba(44,160,44,0.75)",
+                line_width=2,
+                annotation_text=f"主支撐 {sup:.2f}",
                 annotation_position="bottom right",
-                annotation_font_color="#2ca02c",
+                annotation_font_color="#3dbd6e",
+                annotation_font_size=11,
                 row=1, col=1,
             )
         if res:
             fig.add_hline(
-                y=res, line_dash="solid", line_color="rgba(214,39,40,0.55)",
-                line_width=1.5,
-                annotation_text=f"壓力 {res:.2f}",
+                y=res, line_dash="solid", line_color="rgba(214,39,40,0.75)",
+                line_width=2,
+                annotation_text=f"主壓力 {res:.2f}",
                 annotation_position="top right",
-                annotation_font_color="#d62728",
+                annotation_font_color="#ff6060",
+                annotation_font_size=11,
+                row=1, col=1,
+            )
+
+    # 多級支撐（藍色虛線，接近現價的更顯眼）
+    if multi_supports:
+        for i, p in enumerate(multi_supports):
+            opacity = 0.6 - i * 0.12
+            fig.add_hline(
+                y=p, line_dash="dash",
+                line_color=f"rgba(100,180,255,{max(opacity, 0.2)})",
+                line_width=1,
+                annotation_text=f"支 {p:.2f}",
+                annotation_position="right",
+                annotation_font_color="#7ab8ff",
+                annotation_font_size=9,
+                row=1, col=1,
+            )
+    # 多級壓力（橘色虛線）
+    if multi_resistances:
+        for i, p in enumerate(multi_resistances):
+            opacity = 0.6 - i * 0.12
+            fig.add_hline(
+                y=p, line_dash="dash",
+                line_color=f"rgba(255,180,100,{max(opacity, 0.2)})",
+                line_width=1,
+                annotation_text=f"壓 {p:.2f}",
+                annotation_position="right",
+                annotation_font_color="#ffb464",
+                annotation_font_size=9,
                 row=1, col=1,
             )
 
@@ -427,6 +473,53 @@ def build(df: pd.DataFrame, title: str = "", patterns=None,
                 hovertext=death_h, hoverinfo="text",
                 name="KD 死叉", showlegend=False,
             ), row=4, col=1)
+
+        # KD 過熱 / 過冷 標籤（依最新 K 值）
+        last_k = df["k"].iloc[-1] if not pd.isna(df["k"].iloc[-1]) else 50
+        last_d = df["d"].iloc[-1] if not pd.isna(df["d"].iloc[-1]) else 50
+        badge = ""
+        badge_color = ""
+        if last_k >= 80 and last_d >= 80:
+            badge, badge_color = "● 過熱", "#ff6060"
+        elif last_k >= 80:
+            badge, badge_color = "● 偏熱", "#ffa500"
+        elif last_k <= 20 and last_d <= 20:
+            badge, badge_color = "● 過冷", "#3dbd6e"
+        elif last_k <= 20:
+            badge, badge_color = "● 偏冷", "#7ab8ff"
+        if badge:
+            fig.add_annotation(
+                xref="x4 domain" if False else "paper",
+                yref="y4 domain",
+                x=1.0, y=0.95,
+                text=f"<b>{badge}</b>",
+                showarrow=False,
+                font=dict(size=12, color=badge_color),
+                bgcolor="rgba(20,24,35,0.85)",
+                bordercolor=badge_color, borderwidth=1,
+                borderpad=3,
+                xanchor="right", yanchor="top",
+                row=4, col=1,
+            )
+
+    # --- 籌碼 subplot (row=5): 大戶% / 散戶% 歷史 ---
+    if has_chip and chip_history is not None:
+        ch = chip_history.copy()
+        ch["date"] = pd.to_datetime(ch["date"])
+        fig.add_trace(go.Scatter(
+            x=ch["date"], y=ch["kilo_pct"],
+            mode="lines+markers", name="千張大戶 %",
+            line=dict(color="#ffd700", width=2),
+            marker=dict(size=6),
+            showlegend=False,
+        ), row=5, col=1)
+        fig.add_trace(go.Scatter(
+            x=ch["date"], y=ch["retail_pct"],
+            mode="lines+markers", name="散戶 %",
+            line=dict(color="#7ab8ff", width=2),
+            marker=dict(size=6),
+            showlegend=False,
+        ), row=5, col=1)
 
     # 依使用者選擇的期間決定預設顯示範圍
     if len(df) > 0:

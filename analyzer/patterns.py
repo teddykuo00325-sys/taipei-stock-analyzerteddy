@@ -215,3 +215,53 @@ def trendline(df: pd.DataFrame, lookback: int = 60) -> dict:
         "support_date": recent_low_idx,
         "resistance_date": recent_high_idx,
     }
+
+
+def multi_sr(df: pd.DataFrame, n: int = 3,
+             lookback: int = 250,
+             cluster_pct: float = 0.025) -> tuple[list[float], list[float]]:
+    """找出多層級的支撐與壓力（從歷史轉折點聚類）.
+
+    支撐 = 低點聚類中心，依「被測試次數」排序
+    壓力 = 高點聚類中心
+    僅回傳 < 或 > 現價的層級
+    """
+    tail = df.tail(lookback)
+    if len(tail) < 20:
+        return [], []
+
+    highs_idx = argrelextrema(tail["high"].values, np.greater, order=4)[0]
+    lows_idx = argrelextrema(tail["low"].values, np.less, order=4)[0]
+    high_prices = [float(tail["high"].iloc[i]) for i in highs_idx]
+    low_prices = [float(tail["low"].iloc[i]) for i in lows_idx]
+
+    def _cluster(prices: list[float]) -> list[tuple[float, int]]:
+        """(mean, count) — count 越多代表越重要的層級."""
+        if not prices:
+            return []
+        prices_sorted = sorted(prices)
+        clusters: list[list[float]] = []
+        for p in prices_sorted:
+            if clusters and (p - clusters[-1][-1]) / max(p, 1) < cluster_pct:
+                clusters[-1].append(p)
+            else:
+                clusters.append([p])
+        return [(sum(c) / len(c), len(c)) for c in clusters]
+
+    sup_clusters = _cluster(low_prices)
+    res_clusters = _cluster(high_prices)
+    price_now = float(df["close"].iloc[-1])
+
+    # 支撐：取低於現價且被測試次數多者
+    sup_below = [(p, cnt) for p, cnt in sup_clusters if p < price_now * 1.02]
+    sup_below.sort(key=lambda x: -x[1])
+    supports = [round(p, 2) for p, _ in sup_below[:n]]
+    supports.sort(reverse=True)  # 接近現價者在前
+
+    # 壓力：取高於現價且被測試次數多者
+    res_above = [(p, cnt) for p, cnt in res_clusters if p > price_now * 0.98]
+    res_above.sort(key=lambda x: -x[1])
+    resistances = [round(p, 2) for p, _ in res_above[:n]]
+    resistances.sort()  # 接近現價者在前
+
+    return supports, resistances

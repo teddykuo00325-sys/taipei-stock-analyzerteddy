@@ -1957,9 +1957,39 @@ else:
     # ---- 📉 圖表 ----
     with tab_chart:
         from analyzer import candlestick as _cs
+        from analyzer import patterns as _pat
         from analyzer import wave as _wave
         w_detail = _wave.detect(df)
         candle_hist = _cs.scan_history(df, lookback=90)
+        multi_sup, multi_res = _pat.multi_sr(df, n=3)
+
+        # ---- 型態銘牌（主 bull/bear 型態）----
+        primary_pat = None
+        for p in diag.chart_patterns:
+            if p.signal != "neutral":
+                primary_pat = p
+                break
+        if not primary_pat and diag.chart_patterns:
+            primary_pat = diag.chart_patterns[0]
+        if primary_pat:
+            badge_color = ("#d62728" if primary_pat.signal == "bull"
+                           else "#2ca02c" if primary_pat.signal == "bear"
+                           else "#ffd700")
+            badge_icon = ("📈" if primary_pat.signal == "bull"
+                          else "📉" if primary_pat.signal == "bear" else "↔️")
+            st.markdown(
+                f"<div style='padding:10px 16px; margin-bottom:6px; "
+                f"border-left:4px solid {badge_color}; "
+                f"background:rgba(40,44,55,0.55); border-radius:4px;'>"
+                f"<div style='font-size:16px; font-weight:700;'>"
+                f"{badge_icon} {primary_pat.name}</div>"
+                f"<div style='font-size:13px; color:#ccc; margin-top:3px;'>"
+                f"{primary_pat.note}</div>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+
+        # ---- 技術指標 Pills（圖表上方） ----
 
         # ---- 技術指標 Pills（圖表上方） ----
         last_ind = df.iloc[-1]
@@ -1999,6 +2029,11 @@ else:
         st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
         trend_info = {"support": diag.support,
                       "resistance": diag.resistance} if show_sr else None
+        # 取股權歷史供籌碼 subplot 使用
+        try:
+            chip_hist = shareholders.history(code)
+        except Exception:
+            chip_hist = None
         fig = chart.build(
             df, title=f"{name} ({code}) · {interval_label}",
             patterns=diag.chart_patterns if show_patterns else [],
@@ -2013,6 +2048,9 @@ else:
             mid_stop=diag.mid_stop if show_plan else None,
             display_days=display_days_map.get(period_label, 130),
             show_trend_lines=show_trend_lines,
+            multi_supports=multi_sup if show_sr else None,
+            multi_resistances=multi_res if show_sr else None,
+            chip_history=chip_hist,
         )
         st.plotly_chart(fig, use_container_width=True,
                         config={
@@ -2027,10 +2065,81 @@ else:
             "十字線即時顯示當日價格"
         )
         st.caption(
-            "📖 **圖例**：🟥 紅實線=壓力　·　🟩 綠實線=支撐　·　"
-            "🟪 紫虛線=費波納契　·　綠/紅虛線=上升/下降切線　·　"
-            "▲▼(編號)=波浪 · 三角形浮標=K 線型態（**滑鼠移過可看含意**）"
+            "📖 **圖例**：🟥 紅實線=主壓力　·　🟩 綠實線=主支撐　·　"
+            "🟦 藍虛線=多級支撐　·　🟧 橘虛線=多級壓力　·　"
+            "🟪 紫虛線=費波納契　·　▲▼(編號)=波浪 · "
+            "三角形=K 線型態（hover 看含意）"
         )
+
+        # ---- 底部：籌碼 summary bar + 成本區 ----
+        try:
+            holder_sum = shareholders.for_code(code)
+        except Exception:
+            holder_sum = None
+        # 成本區（近 30 日均價 ± σ）
+        cz_lo = cz_hi = cz_avg = None
+        if len(df) >= 30:
+            tail30 = df["close"].tail(30)
+            cz_avg = float(tail30.mean())
+            cz_std = float(tail30.std())
+            cz_lo = round(cz_avg - cz_std, 2)
+            cz_hi = round(cz_avg + cz_std, 2)
+
+        st.markdown("---")
+        sb1, sb2 = st.columns([3, 2])
+        with sb1:
+            if holder_sum:
+                st.markdown(
+                    f"""
+                    <div style='display:flex; gap:16px; flex-wrap:wrap;
+                                font-size:14px;'>
+                      <div><span style='color:#e55353; font-size:18px;'>●</span>
+                        <b style='margin-left:4px;'>大戶</b>
+                        <span style='color:#ff8080; font-weight:700;
+                                     font-size:16px; margin-left:3px;'>
+                          {holder_sum.big_pct:.1f}%</span></div>
+                      <div><span style='color:#ffd700; font-size:18px;'>●</span>
+                        <b style='margin-left:4px;'>中戶</b>
+                        <span style='font-weight:700; font-size:16px;
+                                     margin-left:3px;'>
+                          {holder_sum.mid_pct:.1f}%</span></div>
+                      <div><span style='color:#7ab8ff; font-size:18px;'>●</span>
+                        <b style='margin-left:4px;'>散戶</b>
+                        <span style='color:#7ab8ff; font-weight:700;
+                                     font-size:16px; margin-left:3px;'>
+                          {holder_sum.retail_pct:.1f}%</span></div>
+                      <div><span style='color:#ffa500; font-size:18px;'>●</span>
+                        <b style='margin-left:4px;'>千張</b>
+                        <span style='color:#ffa500; font-weight:700;
+                                     font-size:16px; margin-left:3px;'>
+                          {holder_sum.kilo_pct:.1f}%</span></div>
+                      <div style='color:#888;'>股東
+                        <b style='color:#fafafa; margin-left:4px;'>
+                          {holder_sum.total_holders:,}</b> 人</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.caption("籌碼資料尚不可用")
+        with sb2:
+            if cz_lo and cz_hi:
+                pct = ((price - cz_avg) / cz_avg * 100) if cz_avg else 0
+                warn_icon = ("⚠️" if abs(pct) > 20
+                             else "✅" if abs(pct) < 5 else "")
+                color = ("#ff6060" if pct > 15
+                         else "#3dbd6e" if pct < -15 else "#ffd700")
+                st.markdown(
+                    f"""
+                    <div style='text-align:right; font-size:14px;'>
+                      <span style='color:#aaa;'>📍 成本區 (30日均±σ)：</span>
+                      <b style='color:#f5c342;'>{cz_lo:.2f} ~ {cz_hi:.2f}</b>
+                      <span style='color:{color}; margin-left:6px;'>
+                        {pct:+.1f}%</span> {warn_icon}
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
 
         # ---- 型態解說清單 ----
         if candle_hist:
