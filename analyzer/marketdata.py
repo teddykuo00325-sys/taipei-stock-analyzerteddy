@@ -107,35 +107,55 @@ def _safe_float(v):
 
 
 def _fetch_twse_indices() -> dict:
-    """加權 + 櫃買指數 (TWSE MIS)."""
+    """加權 + 櫃買指數 (TWSE MIS)，雲端 geoblock 時 fallback 至 yfinance."""
+    out: dict = {}
     try:
-        import requests as _rq
-        r = _rq.get(TWSE_MIS,
-                    params={"ex_ch": "tse_t00.tw_|otc_o00.tw_",
-                            "json": "1", "delay": "0"},
-                    headers={"User-Agent": "Mozilla/5.0",
-                             "Referer": "https://mis.twse.com.tw/stock/fibest.jsp"},
-                    timeout=6)
+        r = _http.get(
+            TWSE_MIS,
+            params={"ex_ch": "tse_t00.tw_|otc_o00.tw_",
+                    "json": "1", "delay": "0"},
+            headers={"Referer": "https://mis.twse.com.tw/stock/fibest.jsp"},
+            timeout=8,
+        )
         r.raise_for_status()
         j = r.json()
+        for row in j.get("msgArray", []):
+            last = _safe_float(row.get("z"))
+            prev = _safe_float(row.get("y"))
+            if last is None or prev is None:
+                continue
+            chg = last - prev
+            pct = (chg / prev * 100) if prev else 0
+            label = ("🇹🇼 加權指數" if row.get("c") == "t00"
+                     else "🇹🇼 櫃買指數" if row.get("c") == "o00"
+                     else row.get("n", row.get("c")))
+            key = ("twse" if row.get("c") == "t00"
+                   else "otc" if row.get("c") == "o00"
+                   else row.get("c"))
+            out[key] = IndexQuote(
+                label=label, last=last, prev=prev,
+                change=chg, change_pct=pct,
+                time=row.get("t", ""),
+            )
     except Exception:
-        return {}
-    out = {}
-    for row in j.get("msgArray", []):
-        last = _safe_float(row.get("z"))
-        prev = _safe_float(row.get("y"))
-        chg = (last - prev) if (last is not None and prev is not None) else None
-        pct = (chg / prev * 100) if (chg is not None and prev) else None
-        label = "🇹🇼 加權指數" if row.get("c") == "t00" \
-            else "🇹🇼 櫃買指數" if row.get("c") == "o00" \
-            else row.get("n", row.get("c"))
-        key = "twse" if row.get("c") == "t00" \
-            else "otc" if row.get("c") == "o00" else row.get("c")
-        out[key] = IndexQuote(
-            label=label, last=last, prev=prev,
-            change=chg, change_pct=pct,
-            time=row.get("t", ""),
-        )
+        pass
+
+    # Fallback：若 MIS 被 geoblock，嘗試 yfinance ^TWII
+    if "twse" not in out:
+        try:
+            h = yf.Ticker("^TWII").history(period="5d", interval="1d")
+            if not h.empty and len(h) >= 2:
+                last = float(h["Close"].iloc[-1])
+                prev = float(h["Close"].iloc[-2])
+                chg = last - prev
+                pct = (chg / prev * 100) if prev else 0
+                out["twse"] = IndexQuote(
+                    label="🇹🇼 加權指數 *", last=last, prev=prev,
+                    change=chg, change_pct=pct, time="yf",
+                )
+        except Exception:
+            pass
+
     return out
 
 
@@ -148,7 +168,7 @@ def _fetch_taifex() -> dict:
                      headers={"User-Agent": "Mozilla/5.0",
                               "Content-Type": "application/json",
                               "Referer": "https://mis.taifex.com.tw/futures/"},
-                     timeout=6)
+                     timeout=8)
         r.raise_for_status()
         j = r.json()
     except Exception:
