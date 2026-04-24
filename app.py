@@ -136,7 +136,7 @@ def render_card(row: pd.Series, rank: int):
             if d.weekly_note:
                 st.caption(f"📅 週線　{d.weekly_note.replace('週線', '').strip()}")
 
-        pa = st.columns(4)
+        pa = st.columns([2, 2, 2, 2, 2])
         if d.target_price:
             pa[0].metric("目標價", f"{d.target_price:.2f}",
                          f"{(d.target_price / row['收盤'] - 1) * 100:+.1f}%")
@@ -152,6 +152,14 @@ def render_card(row: pd.Series, rank: int):
         else:
             pa[2].metric("風險報酬比", "—")
         pa[3].metric("日均量", f"{row['日均量(張)']:,} 張")
+        with pa[4]:
+            st.write("")  # 對齊 metric 高度
+            if st.button("🔎 完整分析", key=f"detail_{rank}_{row['代號']}",
+                         use_container_width=True, type="primary"):
+                st.session_state.stock_code = str(row["代號"])
+                st.session_state.app_mode = "🔎 個股查詢"
+                st.session_state.auto_analyze = True
+                st.rerun()
 
         with st.expander("📋 訊號 / 型態 / 診斷詳情"):
             if d.summary:
@@ -181,10 +189,13 @@ def render_card(row: pd.Series, rank: int):
 # ============================================================
 st.sidebar.title("📈 台北股市分析器")
 
+if "app_mode" not in st.session_state:
+    st.session_state.app_mode = "🎯 今日選股"
+
 mode = st.sidebar.radio(
     "模式",
     ["🎯 今日選股", "🔎 個股查詢", "📊 主動式ETF", "🔥 資金流向"],
-    index=0,
+    key="app_mode",
     label_visibility="collapsed",
 )
 
@@ -781,7 +792,9 @@ elif mode == "📊 主動式ETF":
 # ============================================================
 else:
     st.sidebar.subheader("查詢條件")
-    code = st.sidebar.text_input("股票代號", value="2330",
+    if "stock_code" not in st.session_state:
+        st.session_state.stock_code = "2330"
+    code = st.sidebar.text_input("股票代號", key="stock_code",
                                  help="例：2330、2317、6488.TWO")
     interval_label = st.sidebar.selectbox("主要週期", ["日線", "週線", "月線"], index=0)
     period_label = st.sidebar.selectbox(
@@ -802,7 +815,10 @@ else:
     st.title("📈 台北股市分析器")
     st.caption("🔎 個股查詢")
 
-    if not go_btn:
+    # 從今日選股跳轉時自動觸發
+    auto_trigger = st.session_state.pop("auto_analyze", False)
+
+    if not (go_btn or auto_trigger):
         st.info("👈 於左側輸入股票代號後按『開始分析』\n\n"
                 "本系統綜合：四均線戰法、K 線型態、量價、KD/MACD/RSI、"
                 "型態學、波浪理論、三大法人、融資融券 → 產生個股診斷書。")
