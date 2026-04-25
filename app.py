@@ -698,7 +698,20 @@ if mode == "🎯 今日選股":
             st.session_state.screener_time = _dt.datetime.now().strftime(
                 "%Y-%m-%d %H:%M")
         except Exception as e:
-            st.error(f"掃描失敗：{e}")
+            from analyzer.http import JSONFetchError as _JFE
+            if isinstance(e, _JFE) or "Expecting value" in str(e):
+                st.error(
+                    "🌐 **掃描失敗：台股清單 API (TWSE/TPEX) 回應異常**\n\n"
+                    f"`{e}`\n\n"
+                    "可能原因：\n"
+                    "1. TWSE/TPEX OpenAPI 暫時對 Streamlit Cloud IP 拒絕服務\n"
+                    "2. 假日或盤後 API 偶發空值（此情況已自動 retry 2 次）\n"
+                    "3. 網路超時\n\n"
+                    "建議：稍後（5~10 分鐘）再試一次，或確認 "
+                    "https://openapi.twse.com.tw 可達。"
+                )
+            else:
+                st.error(f"掃描失敗：{e}")
             st.stop()
         progress_bar.empty()
 

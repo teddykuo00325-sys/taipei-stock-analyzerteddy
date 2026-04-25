@@ -18,20 +18,21 @@ _NUMERIC_COLS = [
 
 
 def _fetch_twse_raw() -> list[dict]:
-    r = http.get(TWSE_STOCK_DAY_ALL, timeout=20)
-    r.raise_for_status()
-    return r.json()
+    return http.get_json(TWSE_STOCK_DAY_ALL, timeout=20, retries=2)
 
 
 def _fetch_tpex_raw() -> list[dict]:
-    r = http.get(TPEX_DAILY_URL, timeout=20)
-    r.raise_for_status()
-    return r.json()
+    return http.get_json(TPEX_DAILY_URL, timeout=20, retries=2)
 
 
 def fetch_twse_snapshot() -> pd.DataFrame:
     """TWSE 上市 + TPEX 上櫃合併快照."""
     rows = _fetch_twse_raw()
+    if not rows:
+        # 雲端 IP 偶爾被 TWSE 回空，回退至上次成功結果
+        if _cache.get("df") is not None and not _cache["df"].empty:
+            return _cache["df"]
+        raise http.JSONFetchError(TWSE_STOCK_DAY_ALL, 200, "empty array")
     df_twse = pd.DataFrame(rows)
     df_twse["Market"] = "TSE"
 
