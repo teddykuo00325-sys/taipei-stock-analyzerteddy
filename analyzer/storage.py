@@ -100,9 +100,33 @@ def _get_sha(c: dict) -> str | None:
     return None
 
 
+def _download_raw(c: dict) -> tuple[bytes | None, str]:
+    """以 Accept: application/vnd.github.raw 取得檔案原始 bytes.
+
+    此 media type 支援 1~100 MB 檔案（普通 JSON 回應在 >1 MB 時 content 被截空）.
+    """
+    try:
+        headers = _headers(c["token"]).copy()
+        headers["Accept"] = "application/vnd.github.raw"
+        r = requests.get(_content_url(c),
+                         headers=headers,
+                         params={"ref": c["branch"]},
+                         timeout=60)
+        if r.status_code == 404:
+            return None, "not found"
+        if r.status_code != 200:
+            return None, f"HTTP {r.status_code}: {r.text[:120]}"
+        return r.content, "ok"
+    except Exception as e:
+        return None, str(e)[:80]
+
+
 def download_db(local_path: Path,
                 repo_path: str | None = None) -> tuple[bool, str]:
-    """從 GitHub 下載 DB 檔至 local_path；自動偵測 .gz 並解壓."""
+    """從 GitHub 下載 DB 檔至 local_path；自動偵測 .gz 並解壓.
+
+    使用 raw media type 直接取原始 bytes，避開 Contents API 的 1 MB 截斷限制.
+    """
     c = _cfg_for(repo_path) if repo_path else _cfg()
     if not is_configured():
         return False, "GitHub 持久化未設定"
@@ -116,32 +140,25 @@ def download_db(local_path: Path,
 
     last_err = "—"
     for cfg_try in candidates:
+        data, err = _download_raw(cfg_try)
+        if data is None:
+            last_err = err
+            continue
+        is_gz = cfg_try["db_path"].endswith(".gz")
         try:
-            r = requests.get(_content_url(cfg_try),
-                             headers=_headers(cfg_try["token"]),
-                             params={"ref": cfg_try["branch"]},
-                             timeout=30)
-            if r.status_code == 404:
-                last_err = "not found"
-                continue
-            if r.status_code != 200:
-                last_err = f"HTTP {r.status_code}"
-                continue
-            content_b64 = r.json().get("content", "")
-            if not content_b64:
-                last_err = "empty"
-                continue
-            data = base64.b64decode(content_b64)
-            is_gz = cfg_try["db_path"].endswith(".gz")
             if is_gz:
                 data = gzip.decompress(data)
+        except Exception as e:
+            last_err = f"gzip decode: {e}"
+            continue
+        try:
             local_path.parent.mkdir(parents=True, exist_ok=True)
             local_path.write_bytes(data)
-            return True, (f"已下載 {len(data) / 1024:.0f} KB"
-                          + (" (解壓後)" if is_gz else ""))
         except Exception as e:
-            last_err = str(e)[:60]
+            last_err = f"write: {e}"
             continue
+        return True, (f"已下載 {len(data) / 1024:.0f} KB"
+                      + (" (解壓後)" if is_gz else ""))
 
     return False, f"下載失敗：{last_err}"
 

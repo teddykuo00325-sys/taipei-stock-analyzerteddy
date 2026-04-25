@@ -241,17 +241,57 @@ def get(code: str, period: str = "1y",
     return _load(bare, start=want_start)
 
 
+def _extract_ticker_df(data: pd.DataFrame, ticker: str) -> pd.DataFrame:
+    """從 yf.download(list, group_by='ticker') 回傳的 MultiIndex df 取出單檔資料.
+
+    yfinance 對「list 形式 tickers」（即使只有 1 檔）一律回傳 MultiIndex columns
+    [(ticker, OHLCV)]。直接 df = data 會讓 _store 找不到 'Open'/'open' 欄位
+    導致靜默漏存，因此一律以 data[ticker] 取出 single-level df。
+    """
+    if isinstance(data.columns, pd.MultiIndex):
+        if ticker in data.columns.get_level_values(0):
+            return data[ticker]
+        return pd.DataFrame()
+    return data  # 已是 single-level (string-only ticker call)
+
+
+def _bulk_download_chunk(codes: list[str], suffix: str,
+                         period: str | None = None,
+                         start: str | None = None) -> dict[str, pd.DataFrame]:
+    """以指定 suffix (.TW or .TWO) 批次抓並拆出每檔 df.
+
+    回傳 {bare_code: df}（df 可能為空，代表該 suffix 對該 code 無資料）。
+    """
+    tickers = [f"{c}{suffix}" for c in codes]
+    kwargs = {"group_by": "ticker"}
+    if period:
+        kwargs["period"] = period
+    elif start:
+        kwargs["start"] = start
+    data = _yf_download(tickers, **kwargs)
+    out: dict[str, pd.DataFrame] = {}
+    if data is None or data.empty:
+        return {c: pd.DataFrame() for c in codes}
+    for code, ticker in zip(codes, tickers):
+        try:
+            df = _extract_ticker_df(data, ticker).dropna(how="all")
+            out[code] = df
+        except Exception:
+            out[code] = pd.DataFrame()
+    return out
+
+
 def bulk_prepare(codes: Iterable[str],
                  warm_period: str = "2y",
                  chunk_size: int = 40,
                  progress_cb: Callable | None = None) -> dict:
     """批次預熱 / 增量更新快取.
 
-    - 未在 DB 的股票 → 批次抓 warm_period
-    - DB 有資料但非今日 → 批次抓增量（自 min(latest_date)+1）
+    - 未在 DB 的股票 → 批次抓 warm_period（先 .TW 後 .TWO 重試）
+    - DB 有資料但非今日 → 批次抓增量
     - DB 已是今日 → 略過
 
-    回傳 {'warmed': N, 'updated': N, 'skipped': N}
+    回傳 {'warmed': N, 'updated': N, 'skipped': N, 'failed': [...]}
     """
     codes = [_bare(c) for c in codes]
     today = date.today()
@@ -266,83 +306,99 @@ def bulk_prepare(codes: Iterable[str],
     result = {"warmed": 0, "updated": 0, "skipped": len(fresh),
               "failed": []}
 
-    # ----- 首次批次抓 -----
+    def _try_store(code: str, df: pd.DataFrame,
+                   own_latest: str | None = None) -> int:
+        """Store helper：增量時只存比 own_latest 新的列."""
+        if df is None or df.empty:
+            return 0
+        if own_latest:
+            try:
+                df = df[df.index > pd.Timestamp(own_latest)]
+            except Exception:
+                pass
+            if df.empty:
+                return 0
+        return _store(code, df)
+
+    # ----- 首次批次抓（先 .TW，失敗的轉 .TWO 重試）-----
     if need_full:
-        tickers = [f"{c}.TW" for c in need_full]
-        for i in range(0, len(tickers), chunk_size):
-            chunk_t = tickers[i:i + chunk_size]
+        tw_failed: list[str] = []
+        total = len(need_full)
+        for i in range(0, total, chunk_size):
             chunk_c = need_full[i:i + chunk_size]
             if progress_cb:
-                progress_cb(i / max(len(tickers), 1),
-                            f"[首次] 下載 {i + 1}-"
-                            f"{min(i + chunk_size, len(tickers))} "
-                            f"/ {len(tickers)}")
-            data = _yf_download(chunk_t, period=warm_period,
-                                group_by="ticker")
-            if data is None or data.empty:
-                result["failed"].extend(chunk_c)
-                continue
-            for code, ticker in zip(chunk_c, chunk_t):
-                try:
-                    if len(chunk_t) == 1:
-                        df = data
-                    else:
-                        if ticker in data.columns.get_level_values(0):
-                            df = data[ticker]
-                        else:
-                            result["failed"].append(code)
-                            continue
-                    df = df.dropna(how="all")
-                    if df.empty:
-                        result["failed"].append(code)
-                        continue
-                    n = _store(code, df)
+                progress_cb(i / max(total, 1),
+                            f"[首次/.TW] 下載 {i + 1}-"
+                            f"{min(i + chunk_size, total)} / {total}")
+            chunk_data = _bulk_download_chunk(chunk_c, ".TW",
+                                              period=warm_period)
+            for code in chunk_c:
+                df = chunk_data.get(code, pd.DataFrame())
+                n = _try_store(code, df)
+                if n > 0:
+                    result["warmed"] += 1
+                else:
+                    tw_failed.append(code)
+
+        # 重試 .TWO（OTC 上櫃股）
+        if tw_failed:
+            for i in range(0, len(tw_failed), chunk_size):
+                chunk_c = tw_failed[i:i + chunk_size]
+                if progress_cb:
+                    progress_cb(i / max(len(tw_failed), 1),
+                                f"[首次/.TWO] OTC 重試 "
+                                f"{i + 1}-{min(i + chunk_size, len(tw_failed))} "
+                                f"/ {len(tw_failed)}")
+                chunk_data = _bulk_download_chunk(chunk_c, ".TWO",
+                                                  period=warm_period)
+                for code in chunk_c:
+                    df = chunk_data.get(code, pd.DataFrame())
+                    n = _try_store(code, df)
                     if n > 0:
                         result["warmed"] += 1
-                except Exception:
-                    result["failed"].append(code)
+                    else:
+                        result["failed"].append(code)
 
-    # ----- 增量抓（自最早一筆 latest_date 之後）-----
+    # ----- 增量抓（同樣兩階段：.TW 失敗轉 .TWO）-----
     if need_incr:
-        # 找最早的 latest_date，批次抓自該日之後
         earliest_latest = min(latest_map[c] for c in need_incr)
         incr_start_dt = (datetime.strptime(earliest_latest, "%Y-%m-%d").date()
                          + timedelta(days=1))
         incr_start = incr_start_dt.isoformat()
 
-        tickers = [f"{c}.TW" for c in need_incr]
-        for i in range(0, len(tickers), chunk_size):
-            chunk_t = tickers[i:i + chunk_size]
+        tw_failed: list[str] = []
+        total = len(need_incr)
+        for i in range(0, total, chunk_size):
             chunk_c = need_incr[i:i + chunk_size]
             if progress_cb:
-                progress_cb(i / max(len(tickers), 1),
-                            f"[增量] 自 {incr_start} 更新 "
-                            f"{i + 1}-{min(i + chunk_size, len(tickers))} "
-                            f"/ {len(tickers)}")
-            data = _yf_download(chunk_t, start=incr_start,
-                                group_by="ticker")
-            if data is None or data.empty:
-                continue
-            for code, ticker in zip(chunk_c, chunk_t):
-                try:
-                    if len(chunk_t) == 1:
-                        df = data
-                    else:
-                        if ticker in data.columns.get_level_values(0):
-                            df = data[ticker]
-                        else:
-                            continue
-                    df = df.dropna(how="all")
-                    if df.empty:
-                        continue
-                    # 只儲存比 latest_map[code] 新的日期
-                    own_latest = latest_map[code]
-                    df_filtered = df[df.index > pd.Timestamp(own_latest)]
-                    n = _store(code, df_filtered)
+                progress_cb(i / max(total, 1),
+                            f"[增量/.TW] 自 {incr_start} 更新 "
+                            f"{i + 1}-{min(i + chunk_size, total)} / {total}")
+            chunk_data = _bulk_download_chunk(chunk_c, ".TW",
+                                              start=incr_start)
+            for code in chunk_c:
+                df = chunk_data.get(code, pd.DataFrame())
+                n = _try_store(code, df, own_latest=latest_map[code])
+                if n > 0:
+                    result["updated"] += 1
+                elif df.empty:
+                    tw_failed.append(code)
+
+        if tw_failed:
+            for i in range(0, len(tw_failed), chunk_size):
+                chunk_c = tw_failed[i:i + chunk_size]
+                if progress_cb:
+                    progress_cb(i / max(len(tw_failed), 1),
+                                f"[增量/.TWO] OTC 重試 "
+                                f"{i + 1}-{min(i + chunk_size, len(tw_failed))} "
+                                f"/ {len(tw_failed)}")
+                chunk_data = _bulk_download_chunk(chunk_c, ".TWO",
+                                                  start=incr_start)
+                for code in chunk_c:
+                    df = chunk_data.get(code, pd.DataFrame())
+                    n = _try_store(code, df, own_latest=latest_map[code])
                     if n > 0:
                         result["updated"] += 1
-                except Exception:
-                    pass
 
     if progress_cb:
         progress_cb(1.0, f"快取準備完成：首次 {result['warmed']} 檔 / "
@@ -438,7 +494,45 @@ def backup_now(message: str | None = None) -> tuple[bool, str]:
     return storage.upload_db(DB_PATH, message=msg, repo_path=REPO_PATH)
 
 
+# 循環錄影門檻：DB raw size 超過時，先 purge 過期再備份
+ROTATION_THRESHOLD_MB = 60
+ROTATION_KEEP_DAYS = 365
+
+
+def backup_with_rotation(
+    message: str | None = None,
+    threshold_mb: int = ROTATION_THRESHOLD_MB,
+    keep_days: int = ROTATION_KEEP_DAYS,
+) -> tuple[bool, str]:
+    """循環錄影式備份：DB 過大時先刪 keep_days 之前的資料再上傳.
+
+    類似行車紀錄器：日常累積 → 滿了自動覆蓋最舊。
+    回傳 (ok, msg)；msg 前綴含 purge 詳情供 UI 顯示。
+    """
+    from . import storage
+    if not storage.is_configured():
+        return False, "未設定 GitHub secrets"
+
+    s_before = stats()
+    purged_rows = 0
+    rotation_note = ""
+    if s_before["db_size_kb"] > threshold_mb * 1024:
+        purged_rows = purge_older_than(days=keep_days)
+        s_after = stats()
+        saved_kb = s_before["db_size_kb"] - s_after["db_size_kb"]
+        rotation_note = (f"🗑️ 循環刪除 > {keep_days} 日舊資料："
+                         f"{purged_rows:,} 列 / 釋放 {saved_kb / 1024:.1f} MB ｜ ")
+
+    s = stats()
+    msg = message or (f"auto: ohlcv.db ({s['rows']} rows, "
+                      f"{s['codes']} codes"
+                      + (f", rotated -{purged_rows}" if purged_rows else "")
+                      + ")")
+    ok, upload_msg = storage.upload_db(DB_PATH, message=msg,
+                                        repo_path=REPO_PATH)
+    return ok, rotation_note + upload_msg
+
+
 def auto_backup_if_changed(min_stocks: int = 10) -> tuple[bool, str]:
-    """若最近 bulk_prepare 有新增 >= min_stocks 檔，自動備份."""
-    # 由 screener 呼叫端決定是否達閾值，此處只是統一介面
-    return backup_now()
+    """若最近 bulk_prepare 有新增 >= min_stocks 檔，自動備份（含循環錄影）."""
+    return backup_with_rotation()

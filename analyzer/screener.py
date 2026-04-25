@@ -176,7 +176,7 @@ def screen(
     if progress_cb:
         progress_cb(1.0, f"分析完成，{len(results)} 檔通過均量篩選")
 
-    # === 自動備份（有顯著變動時）===
+    # === 自動備份（有顯著變動時，含循環錄影：超過 60 MB 自動刪 1 年前舊資料）===
     new_data = cache_result.get("warmed", 0) + cache_result.get("updated", 0)
     if new_data >= 10:
         try:
@@ -185,7 +185,7 @@ def screen(
                 if progress_cb:
                     progress_cb(1.0,
                                 f"備份 K 線 DB 至 GitHub（新增 {new_data} 檔）…")
-                price_cache.backup_now(
+                price_cache.backup_with_rotation(
                     message=f"auto: +{new_data} codes via screener"
                 )
         except Exception:

@@ -602,17 +602,25 @@ if mode == "🎯 今日選股":
             f"💾 K 線快取　"
             f"({_pc_stats['codes']} 檔 / {_pc_stats['db_size_kb']:.0f} KB)",
             expanded=False):
+        # 容量視覺化：以 60 MB 循環錄影門檻為基準
+        size_mb = _pc_stats["db_size_kb"] / 1024
+        ratio = min(size_mb / 60.0, 1.0)
+        st.progress(ratio,
+                    text=f"📦 {size_mb:.1f} / 60 MB （循環錄影門檻）")
         st.caption(
-            f"日期範圍：{_pc_stats['date_range'][0] or '—'}"
+            f"📅 日期範圍：{_pc_stats['date_range'][0] or '—'}"
             f" ~ {_pc_stats['date_range'][1] or '—'}\n\n"
-            "每檔股票首次抓取後存入本機 SQLite，之後只取增量日期。"
+            "🔁 循環錄影：DB 超過 60 MB 時，備份前自動刪除超過 1 年的舊資料。"
+            "GitHub 單檔上限 100 MB，目前壓縮後僅占用 ~"
+            f"{size_mb * 0.13:.1f} MB。"
         )
         if storage.is_configured():
             if st.button("☁️ 立即備份到 GitHub",
                          key="ohlcv_backup",
-                         use_container_width=True):
+                         use_container_width=True,
+                         help="超過 60 MB 自動刪 1 年前舊資料（循環錄影模式）"):
                 with st.spinner("壓縮 + 上傳中…"):
-                    ok, msg = price_cache.backup_now()
+                    ok, msg = price_cache.backup_with_rotation()
                 if ok:
                     st.success(f"✅ {msg}")
                 else:
@@ -628,14 +636,21 @@ if mode == "🎯 今日選股":
                     st.success(f"✅ {msg}")
                     st.rerun()
                 elif "not found" in msg.lower():
-                    st.info("ℹ️ GitHub 上尚無 K 線備份，請先按「☁️ 立即備份」上傳")
+                    st.info(
+                        f"ℹ️ GitHub 上尚無 K 線備份。\n\n"
+                        f"請先按「☁️ 立即備份到 GitHub」上傳目前 "
+                        f"{_pc_stats['db_size_kb'] / 1024:.1f} MB 的資料"
+                        f"（壓縮後僅 ~{_pc_stats['db_size_kb'] / 1024 * 0.13:.1f} MB），"
+                        f"完成後雲端重開就會自動還原。"
+                    )
                 else:
                     st.warning(f"⚠️ {msg}")
             # Purge 按鈕：DB 太大時清舊資料
-            if _pc_stats["db_size_kb"] > 30 * 1024:
+            # GitHub Contents API 上限 100 MB，gzip 後再壓 ~85%，所以 raw 70 MB 才需提醒
+            if _pc_stats["db_size_kb"] > 70 * 1024:
                 st.warning(
                     f"⚠️ DB {_pc_stats['db_size_kb'] / 1024:.1f} MB "
-                    f"接近 GitHub 上傳上限"
+                    f"建議按「清除 > 1 年舊資料」釋放空間"
                 )
             if st.button("🗑️ 清除 > 1 年舊資料",
                          key="ohlcv_purge",
@@ -1151,12 +1166,19 @@ elif mode == "⭐ 收藏清單":
 
     # 側邊欄：新增股票 + 清單管理
     st.sidebar.subheader("管理收藏")
+    # 單次呼叫 snapshot 並過濾 NaN，避免雲端網路抖動或缺值導致渲染失敗
+    try:
+        _ind_df = industry.snapshot()
+        if _ind_df is not None and not _ind_df.empty:
+            _ind_df = _ind_df.dropna(subset=["code", "short_name"])
+            wl_options = [""] + (_ind_df["code"].astype(str) + " "
+                                 + _ind_df["short_name"].astype(str)).tolist()
+        else:
+            wl_options = [""]
+    except Exception:
+        wl_options = [""]
     add_sel = st.sidebar.selectbox(
-        "新增", [""] + _stock_options() if False
-        else [""] + (industry.snapshot()["code"] + " "
-                     + industry.snapshot()["short_name"]).tolist()
-        if not industry.snapshot().empty else [""],
-        index=0, key="wl_add",
+        "新增", wl_options, index=0, key="wl_add",
     )
     if add_sel:
         add_code = add_sel.split()[0]
@@ -1176,48 +1198,54 @@ elif mode == "⭐ 收藏清單":
                 "📌 收藏清單透過 URL 參數同步：複製瀏覽器網址即可分享或書籤保存。")
         st.stop()
 
-    # 取得產業對照 + 即時報價
-    ind_df = industry.snapshot()
-    with st.spinner(f"抓取 {len(codes)} 檔即時報價 + 計算指標…"):
-        quotes = live.quotes(codes)
+    # 取得產業對照 + 即時報價（失敗不阻擋整頁，留給每檔 try 各自處理）
+    try:
+        ind_df = industry.snapshot()
+        if ind_df is None:
+            ind_df = pd.DataFrame(columns=["code", "short_name"])
+    except Exception as e:
+        st.warning(f"⚠️ 產業資料取得失敗（不影響分析）：{e}")
+        ind_df = pd.DataFrame(columns=["code", "short_name"])
 
-    # 逐檔分析 → 建構 render_card 可用的 row dict
-    from analyzer import candlestick as _cs
+    quotes: dict = {}
+    try:
+        with st.spinner(f"抓取 {len(codes)} 檔即時報價 + 計算指標…"):
+            quotes = live.quotes(codes)
+    except Exception as e:
+        st.warning(f"⚠️ 即時報價取得失敗，將使用日線收盤：{e}")
+
+    # 逐檔分析 → 建構 render_card 可用的 row dict（多執行緒平行抓取）
+    from concurrent.futures import ThreadPoolExecutor, as_completed
     rows_in_zone: list[dict] = []
     rows_other: list[dict] = []
     errors: list[tuple[str, str]] = []
 
-    progress = st.progress(0.0)
     day_key = _today_key()
-    for idx, code in enumerate(codes):
-        progress.progress((idx + 1) / len(codes), text=f"分析 {code}…")
+
+    def _analyze_one(code: str) -> tuple[str, dict | None, str | None]:
         try:
-            # 走快取：同日同股票只跑一次
-            raw, wk, d = cached_analyze(code, "1y", day_key,
+            raw, _wk, d = cached_analyze(code, "1y", day_key,
                                          include_weekly=False,
                                          school=DEFAULT_SCHOOL)
-            # 盤中即時覆蓋（不走快取，因為需要最新價）
             q = quotes.get(code)
             if q and q.current:
                 raw = live.overlay_today(raw, q)
-                # 重新診斷（含最新價）
                 raw = indicators.add_all(raw)
                 d = diagnosis.diagnose(raw, code=code,
                                        school=DEFAULT_SCHOOL)
             info_row = ind_df[ind_df["code"] == code]
-            nm = info_row.iloc[0]["short_name"] if not info_row.empty else code
+            nm = (info_row.iloc[0]["short_name"]
+                  if not info_row.empty else code)
             last = raw.iloc[-1]
-            prev_close = float(raw["close"].iloc[-2]) \
-                if len(raw) >= 2 else float(last["close"])
+            prev_close = (float(raw["close"].iloc[-2])
+                          if len(raw) >= 2 else float(last["close"]))
             chg_pct = ((float(last["close"]) / prev_close - 1) * 100
                        if prev_close else 0.0)
-
             in_entry = False
             if d.entry_zone:
                 lo, hi = d.entry_zone
                 if lo <= float(last["close"]) <= hi:
                     in_entry = True
-
             row = {
                 "代號": code,
                 "名稱": nm,
@@ -1236,14 +1264,35 @@ elif mode == "⭐ 收藏清單":
                          and d.fib.nearest_distance_pct <= 2.5) else "—"),
                 "_df_tail": raw.tail(90).copy(),
                 "_diag": d,
-                # 使用 diag 內建已算好的 candle_history (省一次計算)
                 "_patterns_hist": d.candle_history,
                 "_in_entry_zone": in_entry,
             }
-            (rows_in_zone if in_entry else rows_other).append(row)
+            return code, row, None
         except Exception as e:
-            errors.append((code, str(e)[:80]))
-    progress.empty()
+            return code, None, str(e)[:80]
+
+    progress = st.progress(0.0, text=f"平行分析 {len(codes)} 檔…")
+    done = 0
+    try:
+        with ThreadPoolExecutor(max_workers=min(8, len(codes))) as ex:
+            futures = {ex.submit(_analyze_one, c): c for c in codes}
+            for fut in as_completed(futures):
+                code, row, err = fut.result()
+                done += 1
+                progress.progress(done / len(codes),
+                                  text=f"完成 {done}/{len(codes)}")
+                if err:
+                    errors.append((code, err))
+                elif row:
+                    (rows_in_zone if row["_in_entry_zone"]
+                     else rows_other).append(row)
+    finally:
+        progress.empty()
+
+    # 依原始順序排列（ThreadPool 完成順序不定）
+    order = {c: i for i, c in enumerate(codes)}
+    rows_in_zone.sort(key=lambda r: order.get(r["代號"], 999))
+    rows_other.sort(key=lambda r: order.get(r["代號"], 999))
 
     # ---- 已達進場區警示（突出顯示）----
     if rows_in_zone:

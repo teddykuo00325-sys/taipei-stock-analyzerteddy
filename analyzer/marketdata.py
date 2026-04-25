@@ -238,6 +238,40 @@ def _fetch_one(key: str) -> Quote | None:
         return None
 
 
+def _fetch_stooq_oil() -> dict[str, tuple[float, float, float]]:
+    """從 stooq.com 抓 ICE Brent (CB.F) + WTI (CL.F) 即時報價.
+
+    yfinance BZ=F 為 NYMEX Financial Brent（與 ICE Brent 有 ~$6 價差），
+    使用者以 investing.com 為基準比對，stooq 的 ICE 近月與其一致。
+    CSV 欄位：Symbol,Date,Time,Open,High,Low,Close,Prev,Volume
+    回傳 {'brent': (last, prev, chg_pct), 'wti': (...)}。
+    """
+    out: dict[str, tuple[float, float, float]] = {}
+    for name, sym in (("brent", "cb.f"), ("wti", "cl.f")):
+        try:
+            r = _http.get(
+                f"https://stooq.com/q/l/?s={sym}&f=sd2t2ohlcpv&h&e=csv",
+                timeout=8,
+            )
+            if r.status_code != 200:
+                continue
+            lines = r.text.strip().splitlines()
+            if len(lines) < 2:
+                continue
+            cols = lines[1].split(",")
+            if len(cols) < 9:
+                continue
+            last = float(cols[6])
+            prev = float(cols[7])
+            if last <= 0 or prev <= 0:
+                continue
+            pct = (last / prev - 1) * 100
+            out[name] = (last, prev, pct)
+        except Exception:
+            continue
+    return out
+
+
 def fetch_international(max_age_sec: int = 900) -> dict[str, Quote]:
     """國際行情 — 15 分鐘快取，個別項目失敗時保留上次成功資料."""
     now = time()
@@ -250,6 +284,23 @@ def fetch_international(max_age_sec: int = 900) -> dict[str, Quote]:
         q = _fetch_one(key)
         if q:
             fresh[key] = q
+
+    # 石油：優先用 stooq (ICE Brent CB.F / WTI CL.F 近月) 覆蓋 yfinance
+    # 原因：yfinance BZ=F 為 NYMEX Financial Brent，與 ICE Brent 價差達 ~$6
+    try:
+        oil = _fetch_stooq_oil()
+        for key in ("brent", "wti"):
+            if key not in oil:
+                continue
+            last, prev_px, pct = oil[key]
+            chg = last - prev_px
+            _, label, precision = YF_TICKERS[key]
+            fresh[key] = Quote(
+                key=key, label=label, price=last,
+                change=chg, change_pct=pct, precision=precision,
+            )
+    except Exception:
+        pass
 
     # 部分失敗時，未抓到的項目保留上次結果（避免 60 分鐘空窗）
     merged = {**prev, **fresh}
