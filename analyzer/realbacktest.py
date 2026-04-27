@@ -21,7 +21,7 @@ from typing import Literal
 
 import pandas as pd
 
-from . import price_cache
+from . import live, price_cache
 
 DB_PATH = Path(__file__).parent.parent / "data" / "realbacktest.db"
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -113,14 +113,44 @@ class Session:
     note: str | None
 
 
+def _live_entry_price(code: str, fallback: float) -> tuple[float, str]:
+    """取得最真實的進場參考價.
+
+    優先順序：
+      1. 今日 MIS 即時 current（盤中或剛收盤）
+      2. price_cache 最新收盤（若已是今日）
+      3. fallback（screener 報的價，通常是前一交易日收盤）
+
+    回傳 (price, source)，source ∈ {'live', 'eod', 'fallback'}.
+    """
+    try:
+        quotes = live.quotes([code])
+        q = quotes.get(code)
+        if q and q.current and q.current > 0:
+            return float(q.current), "live"
+    except Exception:
+        pass
+    try:
+        df = price_cache._load(code)
+        if not df.empty:
+            last_date = df.index[-1].date().isoformat()
+            if last_date == date.today().isoformat():
+                return float(df["close"].iloc[-1]), "eod"
+    except Exception:
+        pass
+    return float(fallback), "fallback"
+
+
 def lock_session(side: Literal["long", "short"],
                  picks: list[dict],
                  capital: float = 1_000_000,
                  hold_days: int = 5,
-                 note: str | None = None) -> int:
+                 note: str | None = None,
+                 use_live_entry: bool = True) -> int:
     """鎖定一個回測 session.
 
     picks: [{'代號': '2330', '名稱': '台積電', '收盤': 2185, '分數': 96}, ...]
+    use_live_entry: True 時用今日 MIS 即時價當進場價（避免拿到上一交易日收盤）。
     回傳 session_id.
     """
     today = date.today().isoformat()
@@ -150,15 +180,55 @@ def lock_session(side: Literal["long", "short"],
         sid = cur.lastrowid
 
         for p in picks:
+            code = str(p["代號"])
+            ref_price = float(p["收盤"])
+            if use_live_entry:
+                entry_price, _src = _live_entry_price(code, ref_price)
+            else:
+                entry_price = ref_price
             c.execute(
                 "INSERT INTO realbt_holding "
                 "(session_id, code, name, score, entry_date, entry_price, "
                 " position_size) VALUES (?,?,?,?,?,?,?)",
-                (sid, str(p["代號"]), str(p["名稱"]),
+                (sid, code, str(p["名稱"]),
                  int(p.get("分數", 0)), today,
-                 float(p["收盤"]), per_stock),
+                 entry_price, per_stock),
             )
     return sid
+
+
+def reanchor_entry_prices(session_id: int) -> dict:
+    """以最新 MIS 即時價（或今日收盤）重置 session 的進場價.
+
+    用於：第一次鎖定時拿到的是前一交易日收盤，需校正為今日真實成交價。
+    回傳 {code: (old_price, new_price, source)}.
+    """
+    sess = get_session(session_id)
+    if not sess:
+        raise ValueError(f"找不到 session {session_id}")
+    if sess.status == "closed":
+        raise ValueError(f"session {session_id} 已結算，不可校正")
+
+    today = date.today().isoformat()
+    holdings = list_holdings(session_id)
+    changes: dict = {}
+    with _lock, _conn() as c:
+        for h in holdings:
+            new_price, src = _live_entry_price(h.code, h.entry_price)
+            if src == "fallback":
+                # 沒有更新的資料源，跳過
+                changes[h.code] = (h.entry_price, h.entry_price, src)
+                continue
+            if abs(new_price - h.entry_price) < 0.001:
+                changes[h.code] = (h.entry_price, h.entry_price, src)
+                continue
+            c.execute(
+                "UPDATE realbt_holding SET entry_price=?, entry_date=? "
+                "WHERE session_id=? AND code=?",
+                (new_price, today, session_id, h.code),
+            )
+            changes[h.code] = (h.entry_price, new_price, src)
+    return changes
 
 
 def list_sessions(status: str | None = None) -> list[Session]:

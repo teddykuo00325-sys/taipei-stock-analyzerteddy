@@ -1733,6 +1733,22 @@ elif mode == "📋 實盤回測":
     st.caption("📋 實盤回測　·　鎖定系統當下推薦、追蹤未來持有期間的真實 P&L")
     render_market_sidebar()
 
+    with st.expander("📖 進場價方法論（必讀）", expanded=False):
+        st.markdown("""
+**進場價 (entry_price) 取得邏輯**（依優先順序）：
+
+1. **MIS 即時價** — 盤中或剛收盤時的真實當前價
+2. **今日 EOD 收盤** — 收盤後 yfinance 已更新的當日 K 線
+3. **Fallback (前一交易日收盤)** — 上述兩者都不可得時，退回選股器報的價
+
+⚠️ **重要**：選股器產生的「收盤」欄位是**前一交易日收盤**（因為決策時點是
+盤前 / 開盤前）。直接用該價當作「我今天買進的成本」並不公平 — 開盤後股價
+通常已跳動。所以新建 session 時系統會自動抓 **今日真實 MIS / EOD** 當進場價。
+
+🔧 **如果你看到進場價跟今日實際成交差太多**（如選股報 110、今日最低 117），
+請按下方「🔧 校正進場價」按鈕，系統會用最新 MIS 重新校正。
+        """)
+
     # --- 側邊欄：建立新 session ---
     with st.sidebar.expander("➕ 新建回測 session", expanded=False):
         new_top_n = st.number_input("Top N（多/空各幾檔）", 1, 20, 5)
@@ -1837,8 +1853,8 @@ elif mode == "📋 實盤回測":
                 use_container_width=True, hide_index=True,
             )
 
-            # 結算 / 刪除按鈕
-            ac1, ac2, ac3 = st.columns([1, 1, 4])
+            # 結算 / 校正 / 刪除按鈕
+            ac1, ac2, ac3, ac4 = st.columns([1, 1.2, 1, 3])
             with ac1:
                 if sess.status == "open":
                     if st.button("📌 立即結算",
@@ -1854,6 +1870,31 @@ elif mode == "📋 實盤回測":
                                 pass
                         st.rerun()
             with ac2:
+                if sess.status == "open":
+                    if st.button(
+                            "🔧 校正進場價",
+                            key=f"reanchor_{sess.id}",
+                            help=("選股當下用的是前一交易日收盤；"
+                                  "按此用今日 MIS 即時價（或今日收盤）"
+                                  "校正為真實成交價")):
+                        try:
+                            ch = realbacktest.reanchor_entry_prices(
+                                sess.id)
+                            updated = sum(
+                                1 for o, n, s in ch.values()
+                                if abs(n - o) > 0.001)
+                            st.success(
+                                f"✅ 已校正 {updated} 檔（{len(ch)} 檔中）")
+                            if storage.is_configured():
+                                try:
+                                    realbacktest.backup_now(
+                                        message=f"reanchor #{sess.id}")
+                                except Exception:
+                                    pass
+                            st.rerun()
+                        except ValueError as e:
+                            st.warning(f"⚠️ {e}")
+            with ac3:
                 if st.button("🗑️ 刪除", key=f"del_{sess.id}",
                              help="移除整個 session（不可復原）"):
                     realbacktest.delete_session(sess.id)
