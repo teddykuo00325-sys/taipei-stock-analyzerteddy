@@ -121,52 +121,68 @@ def build(df: pd.DataFrame, title: str = "", patterns=None,
                 row=1, col=1,
             )
 
-    # 多級支撐（藍色虛線，接近現價的更顯眼）
+    # 取現價（用於距離過濾，避免過遠的價位也畫線造成擁擠）
+    cur_price = float(df["close"].iloc[-1]) if len(df) else 0
+    # 距離現價 ±15% 以內才畫，否則 hide（Fib 較寬鬆 ±20%）
+    def _within(p: float, pct: float = 15.0) -> bool:
+        if cur_price <= 0:
+            return True
+        return abs(p / cur_price - 1) * 100 <= pct
+
+    # 多級支撐（藍色虛線）— 只畫前 2 條接近現價的，避免擁擠
     if multi_supports:
-        for i, p in enumerate(multi_supports):
-            opacity = 0.6 - i * 0.12
+        nearby = [p for p in multi_supports if _within(p, 15)][:2]
+        for i, p in enumerate(nearby):
+            opacity = 0.55 - i * 0.15
             fig.add_hline(
                 y=p, line_dash="dash",
-                line_color=f"rgba(100,180,255,{max(opacity, 0.2)})",
+                line_color=f"rgba(100,180,255,{max(opacity, 0.25)})",
                 line_width=1,
-                annotation_text=f"支 {p:.2f}",
-                annotation_position="right",
+                annotation_text=f"支{i+1} {p:.2f}",
+                annotation_position="left",  # 左側避免擠壓力線
                 annotation_font_color="#7ab8ff",
                 annotation_font_size=9,
                 row=1, col=1,
             )
-    # 多級壓力（橘色虛線）
+    # 多級壓力（橘色虛線）— 同樣只畫前 2 條
     if multi_resistances:
-        for i, p in enumerate(multi_resistances):
-            opacity = 0.6 - i * 0.12
+        nearby = [p for p in multi_resistances if _within(p, 15)][:2]
+        for i, p in enumerate(nearby):
+            opacity = 0.55 - i * 0.15
             fig.add_hline(
                 y=p, line_dash="dash",
-                line_color=f"rgba(255,180,100,{max(opacity, 0.2)})",
+                line_color=f"rgba(255,180,100,{max(opacity, 0.25)})",
                 line_width=1,
-                annotation_text=f"壓 {p:.2f}",
+                annotation_text=f"壓{i+1} {p:.2f}",
                 annotation_position="right",
                 annotation_font_color="#ffb464",
                 annotation_font_size=9,
                 row=1, col=1,
             )
 
-    # 費波納契關鍵級位（38.2% / 50% / 61.8% + 最近級位）
+    # 費波納契關鍵級位 — 只畫接近現價 ±20% 內的，且最多 3 條
     if fib and fib.levels:
         keys_to_draw = {"38.2% 回檔", "50.0% 回檔", "61.8% 回檔",
                         "38.2% 反彈", "50.0% 反彈", "61.8% 反彈"}
+        candidates = []
         for lv in fib.levels:
             if lv.name in keys_to_draw or \
                (fib.nearest and lv.name == fib.nearest.name):
-                color = "rgba(148,103,189,0.55)"  # 紫
-                fig.add_hline(
-                    y=lv.price, line_dash="dot", line_color=color,
-                    line_width=1,
-                    annotation_text=f"Fib {lv.name} {lv.price:.2f}",
-                    annotation_position="top left",
-                    annotation_font_color="#7a4db5",
-                    annotation_font_size=9,
-                    row=1, col=1,
-                )
+                if _within(lv.price, 20):
+                    candidates.append(lv)
+        # 按距離現價排序，取前 3
+        candidates.sort(key=lambda x: abs(x.price - cur_price))
+        for lv in candidates[:3]:
+            color = "rgba(148,103,189,0.50)"
+            fig.add_hline(
+                y=lv.price, line_dash="dot", line_color=color,
+                line_width=1,
+                annotation_text=f"Fib {lv.name.split()[0]} {lv.price:.2f}",
+                annotation_position="top left",
+                annotation_font_color="#9a6dd5",
+                annotation_font_size=9,
+                row=1, col=1,
+            )
 
     # 波浪轉折點標記（簡化：只標最近 4 個，較小字型）
     abs_pivots: list[tuple[int, str, float]] = []
@@ -180,7 +196,8 @@ def build(df: pd.DataFrame, title: str = "", patterns=None,
 
     if abs_pivots:
         recent = abs_pivots[-4:]
-        wave_nums = list(range(len(recent), 0, -1))
+        # Elliott 慣例：最舊為 1，最新為 N（之前版本反向會誤導）
+        wave_nums = list(range(1, len(recent) + 1))
         for (actual_idx, typ, price), num in zip(recent, wave_nums):
             date = df.index[actual_idx]
             marker_color = "#d62728" if typ == "H" else "#2ca02c"
@@ -489,8 +506,7 @@ def build(df: pd.DataFrame, title: str = "", patterns=None,
             badge, badge_color = "● 偏冷", "#7ab8ff"
         if badge:
             fig.add_annotation(
-                xref="x4 domain" if False else "paper",
-                yref="y4 domain",
+                xref="paper", yref="y4 domain",
                 x=1.0, y=0.95,
                 text=f"<b>{badge}</b>",
                 showarrow=False,
@@ -528,17 +544,30 @@ def build(df: pd.DataFrame, title: str = "", patterns=None,
     else:
         start_dt = end_dt = None
 
+    # 高度依 subplot 數動態調整（4 副圖 760、5 副圖 920）
+    n_subplots = 5 if has_chip else 4
+    chart_height = 760 if n_subplots == 4 else 920
     fig.update_layout(
-        title=title, height=960, xaxis_rangeslider_visible=False,
+        title=title, height=chart_height, xaxis_rangeslider_visible=False,
         margin=dict(l=10, r=10, t=80, b=10),
         legend=dict(orientation="h", y=1.05, x=0, font=dict(size=10)),
         hovermode="x unified",
         dragmode="pan",
         hoverlabel=dict(bgcolor="rgba(20,24,35,0.9)", font_size=12),
     )
-    # 時間軸 range selector（在所有 subplot 共用）
+    # 時間軸 range selector（所有 subplot 共用）
+    # 排除週末 + 資料中實際缺失的日期（台股假日、停牌日）— 避免直線空白段
+    missing_dates = []
+    if len(df) > 1:
+        full_range = pd.date_range(df.index[0], df.index[-1], freq="B")
+        present = set(df.index.normalize())
+        missing_dates = [d for d in full_range if d not in present]
+    rangebreaks = [dict(bounds=["sat", "mon"])]
+    if missing_dates:
+        rangebreaks.append(dict(values=[d.strftime("%Y-%m-%d")
+                                        for d in missing_dates]))
     fig.update_xaxes(
-        rangebreaks=[dict(bounds=["sat", "mon"])],
+        rangebreaks=rangebreaks,
         showspikes=True, spikemode="across", spikesnap="cursor",
         spikedash="dot", spikecolor="#888", spikethickness=1,
     )
