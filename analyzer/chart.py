@@ -78,20 +78,18 @@ def build(df: pd.DataFrame, title: str = "", patterns=None,
                 bgcolor="rgba(20,24,35,0.7)",
                 borderpad=2,
             )
+    # 提高 K 線占比、移除冗餘的 subplot titles（內容已自明，騰出垂直空間）
     if has_chip:
         fig = make_subplots(
             rows=5, cols=1, shared_xaxes=True,
-            row_heights=[0.56, 0.11, 0.10, 0.11, 0.12],
-            vertical_spacing=0.012,
-            subplot_titles=("K 線圖", "成交量", "MACD", "KD",
-                            "籌碼 (大戶 / 散戶 %)"),
+            row_heights=[0.62, 0.10, 0.09, 0.10, 0.09],
+            vertical_spacing=0.025,
         )
     else:
         fig = make_subplots(
             rows=4, cols=1, shared_xaxes=True,
-            row_heights=[0.66, 0.12, 0.11, 0.11],
-            vertical_spacing=0.015,
-            subplot_titles=("K 線圖", "成交量", "MACD", "KD"),
+            row_heights=[0.72, 0.10, 0.09, 0.09],
+            vertical_spacing=0.030,
         )
 
     # --- K 線 (台股紅漲綠跌) ---
@@ -326,7 +324,7 @@ def build(df: pd.DataFrame, title: str = "", patterns=None,
                      "neutral": "top center"}
         names = {"bull": "多頭型態", "bear": "空頭型態", "neutral": "中性型態"}
 
-        # 帶文字層（最近 6 個）
+        # 帶文字層（最近 6 個）— 不放 legend，因為標記文字已自說明
         for kind, data in labeled.items():
             if not data["x"]:
                 continue
@@ -337,7 +335,7 @@ def build(df: pd.DataFrame, title: str = "", patterns=None,
                 text=data["txt"], textposition=positions[kind],
                 textfont=dict(size=10, color=colors[kind]),
                 hovertext=data["hv"], hoverinfo="text",
-                name=names[kind], showlegend=True,
+                name=names[kind], showlegend=False,
             ), row=1, col=1)
         # 只圖示層（較舊）
         for kind, data in icon_only.items():
@@ -585,6 +583,35 @@ def build(df: pd.DataFrame, title: str = "", patterns=None,
         showspikes=True, spikemode="across", spikesnap="cursor",
         spikedash="dot", spikecolor="#888", spikethickness=1,
     )
+    # === Y 軸範圍鎖定（K 線 row）===
+    # 之前 add_hline 會把 target/Fib 等遠離現價的橫線納入 Y 軸 autorange，
+    # 結果 K 線被壓扁到 Y 軸一半區域。改為只依「視窗內 K 線高低」決定 Y
+    # 範圍，距現價 30% 以外的 overlay 直接 clip 掉（看不到不影響使用）。
+    if _ovl_x0 is not None:
+        visible_df = df.iloc[max(0, len(df) - display_days):]
+        if len(visible_df) > 0:
+            y_lo = float(visible_df["low"].min()) * 0.96
+            y_hi = float(visible_df["high"].max()) * 1.04
+            # 若 target / 主壓力 在 K 線高點上方 30% 內，納入；否則裁掉
+            extras = []
+            if target_price:
+                extras.append(target_price)
+            if trend and trend.get("resistance"):
+                extras.append(trend["resistance"])
+            for e in extras:
+                if y_lo <= e <= y_hi * 1.30:
+                    y_hi = max(y_hi, e * 1.02)
+            # 若 短線停損 / 主支撐 在低點下方 25% 內，納入
+            extras_lo = []
+            if short_stop:
+                extras_lo.append(short_stop)
+            if trend and trend.get("support"):
+                extras_lo.append(trend["support"])
+            for e in extras_lo:
+                if y_lo * 0.75 <= e <= y_hi:
+                    y_lo = min(y_lo, e * 0.98)
+            fig.update_yaxes(range=[y_lo, y_hi], row=1, col=1)
+
     # 在最上方 subplot 加 range selector 與預設縮放
     # 移除「全部」按鈕：點到後 X 軸會擴展到資料極限，水平 overlay 會橫
     # 跨整圖（包括沒有 K 線的空白區）造成嚴重視覺擁擠，且技術分析
