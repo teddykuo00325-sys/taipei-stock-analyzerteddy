@@ -8,8 +8,8 @@ import logging
 
 from analyzer import (chart, data, diagnosis, etf, etf_scraper,
                       indicators, industry, live, marketdata,
-                      moneyflow, price_cache, revenue, schools,
-                      screener, shareholders, storage, targets,
+                      moneyflow, price_cache, realbacktest, revenue,
+                      schools, screener, shareholders, storage, targets,
                       watchlist)
 
 logging.getLogger("yfinance").setLevel(logging.CRITICAL)
@@ -496,7 +496,7 @@ st.sidebar.markdown(
 if "app_mode" not in st.session_state:
     st.session_state.app_mode = "🎯 今日選股"
 
-# === 啟動時自動從 GitHub 還原 K 線快取 ===
+# === 啟動時自動從 GitHub 還原 K 線快取 + 實盤回測 DB ===
 if "_ohlcv_restored" not in st.session_state:
     st.session_state._ohlcv_restored = True
     if storage.is_configured():
@@ -506,6 +506,12 @@ if "_ohlcv_restored" not in st.session_state:
                 st.toast(f"☁️ K 線快取已從 GitHub 還原：{msg}", icon="✅")
         except Exception:
             pass
+        try:
+            ok, msg = realbacktest.auto_restore()
+            if ok:
+                st.toast(f"☁️ 實盤回測 DB 已還原：{msg}", icon="✅")
+        except Exception:
+            pass
 # 處理上一輪 rerun 設定的模式切換意圖（必須在 widget 渲染前）
 if "_mode_override" in st.session_state:
     st.session_state.app_mode = st.session_state.pop("_mode_override")
@@ -513,7 +519,8 @@ if "_mode_override" in st.session_state:
 mode = st.sidebar.radio(
     "模式",
     ["🎯 今日選股", "🔎 個股查詢", "⭐ 收藏清單",
-     "📈 多股比較", "📊 主動式ETF", "🔥 資金流向"],
+     "📈 多股比較", "📊 主動式ETF", "🔥 資金流向",
+     "📋 實盤回測"],
     key="app_mode",
     label_visibility="collapsed",
 )
@@ -1714,6 +1721,147 @@ elif mode == "📊 主動式ETF":
                             }),
                             use_container_width=True, hide_index=True,
                         )
+
+
+# ============================================================
+# 📋 實盤回測 — 鎖定當下推薦、追蹤未來表現
+# ============================================================
+elif mode == "📋 實盤回測":
+    render_index_header()
+    st.caption("📋 實盤回測　·　鎖定系統當下推薦、追蹤未來持有期間的真實 P&L")
+    render_market_sidebar()
+
+    # --- 側邊欄：建立新 session ---
+    with st.sidebar.expander("➕ 新建回測 session", expanded=False):
+        new_top_n = st.number_input("Top N（多/空各幾檔）", 1, 20, 5)
+        new_capital = st.number_input(
+            "資金 (TWD)", 100_000, 10_000_000, 1_000_000, 100_000,
+        )
+        new_hold_days = st.number_input("持有天數", 1, 60, 5)
+        new_note = st.text_input("備註",
+                                  value=f"{date.today().isoformat()} 實盤")
+        if st.button("🚀 跑當前選股 + 鎖定", use_container_width=True,
+                     type="primary"):
+            with st.spinner("掃描中（首次約 1-3 分鐘）…"):
+                res = screener.screen(
+                    min_avg_volume_lots=1000,
+                    top_n=int(new_top_n),
+                    pre_filter_lots_today=200,
+                )
+            if res["passed"] == 0:
+                st.error("掃描無通過篩選的股票")
+            else:
+                long_picks = res["long"].head(new_top_n).to_dict("records")
+                short_picks = res["short"].head(new_top_n).to_dict("records")
+                try:
+                    sid_l = realbacktest.lock_session(
+                        "long", long_picks, capital=new_capital,
+                        hold_days=int(new_hold_days), note=new_note)
+                    sid_s = realbacktest.lock_session(
+                        "short", short_picks, capital=new_capital,
+                        hold_days=int(new_hold_days), note=new_note)
+                    st.success(f"✅ 已鎖定 long#{sid_l} + short#{sid_s}")
+                    # 自動備份至 GitHub（雲端持久化）
+                    if storage.is_configured():
+                        try:
+                            realbacktest.backup_now(
+                                message=f"lock long#{sid_l} short#{sid_s}")
+                        except Exception:
+                            pass
+                    st.rerun()
+                except ValueError as e:
+                    st.warning(f"⚠️ {e}")
+
+    # --- 主畫面：列出所有 session ---
+    sessions = realbacktest.list_sessions()
+    if not sessions:
+        st.info("尚未鎖定任何回測 session。請從左側「➕ 新建回測 session」開始，"
+                "或先去「🎯 今日選股」確認當前推薦。")
+        st.stop()
+
+    # 統計卡片
+    open_sessions = [s for s in sessions if s.status == "open"]
+    closed_sessions = [s for s in sessions if s.status == "closed"]
+    c1, c2, c3 = st.columns(3)
+    c1.metric("進行中 sessions", len(open_sessions))
+    c2.metric("已結算 sessions", len(closed_sessions))
+    c3.metric("總投入 (進行中)",
+              f"{sum(s.capital for s in open_sessions):,.0f}")
+
+    st.divider()
+
+    for sess in sessions:
+        summary = realbacktest.session_summary(sess.id)
+        if not summary:
+            continue
+        df = summary["holdings_df"]
+        side_emoji = "🚀" if sess.side == "long" else "🐻"
+        side_zh = "做多" if sess.side == "long" else "做空"
+        status_emoji = "🟢" if sess.status == "open" else "✅"
+        title = (f"{status_emoji} #{sess.id} {side_emoji} {side_zh}　"
+                 f"{sess.lock_date} → {sess.target_exit_date}　"
+                 f"｜ Top {sess.top_n} ｜ 資金 {sess.capital:,.0f}　"
+                 f"｜ P&L {summary['total_pnl']:+,.0f} "
+                 f"({summary['total_return_pct']:+.2f}%)")
+
+        with st.expander(title, expanded=(sess.status == "open")):
+            mc1, mc2, mc3, mc4 = st.columns(4)
+            mc1.metric("總 P&L", f"{summary['total_pnl']:+,.0f}",
+                       f"{summary['total_return_pct']:+.2f}%")
+            mc2.metric("結算後資產",
+                       f"{summary['final_capital']:,.0f}")
+            mc3.metric("勝率",
+                       f"{summary['win_rate']:.0f}%",
+                       f"贏 {summary['win']} / 輸 {summary['lose']}")
+            mc4.metric("無資料", summary["no_data"])
+
+            # 持股明細
+            disp = df.copy()
+            disp.columns = ["代號", "名稱", "分數",
+                            "進場價", "現價", "漲跌%", "P&L"]
+            st.dataframe(
+                disp.style.format({
+                    "進場價": "{:.2f}",
+                    "現價": "{:.2f}",
+                    "漲跌%": "{:+.2f}%",
+                    "P&L": "{:+,.0f}",
+                }, na_rep="—").map(
+                    lambda v: ("color: #4ade80" if isinstance(v, (int, float))
+                               and v > 0 else
+                               "color: #f87171" if isinstance(v, (int, float))
+                               and v < 0 else ""),
+                    subset=["漲跌%", "P&L"],
+                ),
+                use_container_width=True, hide_index=True,
+            )
+
+            # 結算 / 刪除按鈕
+            ac1, ac2, ac3 = st.columns([1, 1, 4])
+            with ac1:
+                if sess.status == "open":
+                    if st.button("📌 立即結算",
+                                 key=f"close_{sess.id}",
+                                 help="以最新收盤鎖定 exit_price"):
+                        n, pnl = realbacktest.close_session(sess.id)
+                        st.success(f"✅ 結算 {n} 檔，總 P&L {pnl:+,.0f}")
+                        if storage.is_configured():
+                            try:
+                                realbacktest.backup_now(
+                                    message=f"close session#{sess.id}")
+                            except Exception:
+                                pass
+                        st.rerun()
+            with ac2:
+                if st.button("🗑️ 刪除", key=f"del_{sess.id}",
+                             help="移除整個 session（不可復原）"):
+                    realbacktest.delete_session(sess.id)
+                    if storage.is_configured():
+                        try:
+                            realbacktest.backup_now(
+                                message=f"delete session#{sess.id}")
+                        except Exception:
+                            pass
+                    st.rerun()
 
 
 # ============================================================
