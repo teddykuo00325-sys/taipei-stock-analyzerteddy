@@ -35,6 +35,49 @@ def build(df: pd.DataFrame, title: str = "", patterns=None,
     # 如有籌碼歷史 → 5 subplot; 否則 4 subplot
     has_chip = (chip_history is not None and not chip_history.empty
                 and len(chip_history) >= 1)
+
+    # 計算 overlay 線段繪製範圍：限制在使用者選的 display_days 視窗內，
+    # 避免 user 按「全部」rangeselector 時水平線橫跨整個歷史圖（包括沒
+    # K 線的空白區）造成視覺擁擠。
+    _ovl_x0 = (df.index[max(0, len(df) - display_days)]
+               if len(df) else None)
+    _ovl_x1 = df.index[-1] if len(df) else None
+
+    def _hline_clipped(y, color, width=1, dash=None,
+                       text=None, text_color=None, text_size=10,
+                       text_pos="right", row=1):
+        """畫水平線，但只限制在 display_days 視窗內（以 add_shape 實作）.
+
+        用 add_shape 而非 add_hline，避免 plotly 擴展線段到所有 x 範圍。
+        text_pos: 'left' / 'right' / 'center' — 標註位置在線段的哪端。
+        """
+        if _ovl_x0 is None:
+            return
+        line_dict = dict(color=color, width=width)
+        if dash:
+            line_dict["dash"] = dash
+        fig.add_shape(
+            type="line", xref=f"x{row if row > 1 else ''}",
+            yref=f"y{row if row > 1 else ''}",
+            x0=_ovl_x0, x1=_ovl_x1, y0=y, y1=y,
+            line=line_dict, layer="below",
+        )
+        if text:
+            xa = _ovl_x1 if text_pos == "right" else \
+                 _ovl_x0 if text_pos == "left" else \
+                 _ovl_x0 + (_ovl_x1 - _ovl_x0) / 2
+            anchor = "right" if text_pos == "right" else \
+                     "left" if text_pos == "left" else "center"
+            fig.add_annotation(
+                xref=f"x{row if row > 1 else ''}",
+                yref=f"y{row if row > 1 else ''}",
+                x=xa, y=y, text=text, showarrow=False,
+                font=dict(size=text_size,
+                          color=text_color or color),
+                xanchor=anchor, yanchor="bottom",
+                bgcolor="rgba(20,24,35,0.7)",
+                borderpad=2,
+            )
     if has_chip:
         fig = make_subplots(
             rows=5, cols=1, shared_xaxes=True,
@@ -70,30 +113,22 @@ def build(df: pd.DataFrame, title: str = "", patterns=None,
                 row=1, col=1,
             )
 
-    # 型態頸線標示（依多/空著色，更顯眼）
+    # 型態頸線標示（依多/空著色，更顯眼）— 限制在 display 視窗內
     for pat in patterns:
         if pat.neckline:
             if pat.signal == "bull":
-                lcolor = "rgba(214,39,40,0.85)"   # 紅 bull
-                font_color = "#ff6060"
+                lcolor = "rgba(214,39,40,0.85)"
+                fcolor = "#ff6060"
             elif pat.signal == "bear":
-                lcolor = "rgba(44,160,44,0.85)"   # 綠 bear
-                font_color = "#3dbd6e"
+                lcolor = "rgba(44,160,44,0.85)"
+                fcolor = "#3dbd6e"
             else:
-                lcolor = "rgba(255,215,0,0.75)"   # 黃中性
-                font_color = "#ffd700"
-            fig.add_hline(
-                y=pat.neckline, line_dash="dash",
-                line_color=lcolor, line_width=1.8,
-                annotation_text=f"<b>{pat.name}</b> 頸線 {pat.neckline:.2f}",
-                annotation_position="top left",
-                annotation_font_color=font_color,
-                annotation_font_size=11,
-                annotation_bgcolor="rgba(20,24,35,0.85)",
-                annotation_bordercolor=font_color,
-                annotation_borderwidth=0.8,
-                annotation_borderpad=3,
-                row=1, col=1,
+                lcolor = "rgba(255,215,0,0.75)"
+                fcolor = "#ffd700"
+            _hline_clipped(
+                pat.neckline, color=lcolor, width=1.8, dash="dash",
+                text=f"<b>{pat.name}</b> 頸線 {pat.neckline:.2f}",
+                text_color=fcolor, text_size=11, text_pos="left",
             )
 
     # 主要支撐 / 壓力
@@ -101,66 +136,50 @@ def build(df: pd.DataFrame, title: str = "", patterns=None,
         sup = trend.get("support")
         res = trend.get("resistance")
         if sup:
-            fig.add_hline(
-                y=sup, line_dash="solid", line_color="rgba(44,160,44,0.75)",
-                line_width=2,
-                annotation_text=f"主支撐 {sup:.2f}",
-                annotation_position="bottom right",
-                annotation_font_color="#3dbd6e",
-                annotation_font_size=11,
-                row=1, col=1,
+            _hline_clipped(
+                sup, color="rgba(44,160,44,0.85)", width=2,
+                text=f"主支撐 {sup:.2f}",
+                text_color="#3dbd6e", text_size=11, text_pos="right",
             )
         if res:
-            fig.add_hline(
-                y=res, line_dash="solid", line_color="rgba(214,39,40,0.75)",
-                line_width=2,
-                annotation_text=f"主壓力 {res:.2f}",
-                annotation_position="top right",
-                annotation_font_color="#ff6060",
-                annotation_font_size=11,
-                row=1, col=1,
+            _hline_clipped(
+                res, color="rgba(214,39,40,0.85)", width=2,
+                text=f"主壓力 {res:.2f}",
+                text_color="#ff6060", text_size=11, text_pos="right",
             )
 
-    # 取現價（用於距離過濾，避免過遠的價位也畫線造成擁擠）
+    # 取現價（用於距離過濾）
     cur_price = float(df["close"].iloc[-1]) if len(df) else 0
-    # 距離現價 ±15% 以內才畫，否則 hide（Fib 較寬鬆 ±20%）
+
     def _within(p: float, pct: float = 15.0) -> bool:
         if cur_price <= 0:
             return True
         return abs(p / cur_price - 1) * 100 <= pct
 
-    # 多級支撐（藍色虛線）— 只畫前 2 條接近現價的，避免擁擠
+    # 多級支撐 — 限制視窗、只畫 2 條最接近現價的
     if multi_supports:
         nearby = [p for p in multi_supports if _within(p, 15)][:2]
         for i, p in enumerate(nearby):
-            opacity = 0.55 - i * 0.15
-            fig.add_hline(
-                y=p, line_dash="dash",
-                line_color=f"rgba(100,180,255,{max(opacity, 0.25)})",
-                line_width=1,
-                annotation_text=f"支{i+1} {p:.2f}",
-                annotation_position="left",  # 左側避免擠壓力線
-                annotation_font_color="#7ab8ff",
-                annotation_font_size=9,
-                row=1, col=1,
+            op = 0.55 - i * 0.15
+            _hline_clipped(
+                p, color=f"rgba(100,180,255,{max(op, 0.25)})",
+                width=1, dash="dash",
+                text=f"支{i+1} {p:.2f}",
+                text_color="#7ab8ff", text_size=9, text_pos="left",
             )
-    # 多級壓力（橘色虛線）— 同樣只畫前 2 條
+    # 多級壓力 — 同上
     if multi_resistances:
         nearby = [p for p in multi_resistances if _within(p, 15)][:2]
         for i, p in enumerate(nearby):
-            opacity = 0.55 - i * 0.15
-            fig.add_hline(
-                y=p, line_dash="dash",
-                line_color=f"rgba(255,180,100,{max(opacity, 0.25)})",
-                line_width=1,
-                annotation_text=f"壓{i+1} {p:.2f}",
-                annotation_position="right",
-                annotation_font_color="#ffb464",
-                annotation_font_size=9,
-                row=1, col=1,
+            op = 0.55 - i * 0.15
+            _hline_clipped(
+                p, color=f"rgba(255,180,100,{max(op, 0.25)})",
+                width=1, dash="dash",
+                text=f"壓{i+1} {p:.2f}",
+                text_color="#ffb464", text_size=9, text_pos="right",
             )
 
-    # 費波納契關鍵級位 — 只畫接近現價 ±20% 內的，且最多 3 條
+    # 費波納契關鍵級位 — ±20% 內最多 3 條
     if fib and fib.levels:
         keys_to_draw = {"38.2% 回檔", "50.0% 回檔", "61.8% 回檔",
                         "38.2% 反彈", "50.0% 反彈", "61.8% 反彈"}
@@ -170,18 +189,13 @@ def build(df: pd.DataFrame, title: str = "", patterns=None,
                (fib.nearest and lv.name == fib.nearest.name):
                 if _within(lv.price, 20):
                     candidates.append(lv)
-        # 按距離現價排序，取前 3
         candidates.sort(key=lambda x: abs(x.price - cur_price))
         for lv in candidates[:3]:
-            color = "rgba(148,103,189,0.50)"
-            fig.add_hline(
-                y=lv.price, line_dash="dot", line_color=color,
-                line_width=1,
-                annotation_text=f"Fib {lv.name.split()[0]} {lv.price:.2f}",
-                annotation_position="top left",
-                annotation_font_color="#9a6dd5",
-                annotation_font_size=9,
-                row=1, col=1,
+            _hline_clipped(
+                lv.price, color="rgba(148,103,189,0.55)",
+                width=1, dash="dot",
+                text=f"Fib {lv.name.split()[0]} {lv.price:.2f}",
+                text_color="#9a6dd5", text_size=9, text_pos="left",
             )
 
     # 波浪轉折點標記（簡化：只標最近 4 個，較小字型）
@@ -338,47 +352,43 @@ def build(df: pd.DataFrame, title: str = "", patterns=None,
                 name=f"{names[kind]} (較舊)", showlegend=False,
             ), row=1, col=1)
 
-    # --- 進場區 / 目標 / 停損 水平線（交易計畫）---
-    if entry_zone:
+    # --- 進場區 / 目標 / 停損 水平線（交易計畫）— 限制在 display 視窗 ---
+    if entry_zone and _ovl_x0 is not None:
         lo_e, hi_e = entry_zone
-        fig.add_hrect(
-            y0=lo_e, y1=hi_e,
+        fig.add_shape(
+            type="rect", xref="x", yref="y",
+            x0=_ovl_x0, x1=_ovl_x1, y0=lo_e, y1=hi_e,
             fillcolor="rgba(255,255,0,0.12)",
-            layer="below", line_width=0,
-            annotation_text=f"💡 建議進場區 {lo_e:.2f} ~ {hi_e:.2f}",
-            annotation_position="top right",
-            annotation_font=dict(size=10, color="#ffdd00"),
-            row=1, col=1,
+            line=dict(width=0), layer="below",
+        )
+        fig.add_annotation(
+            xref="x", yref="y",
+            x=_ovl_x1, y=hi_e,
+            text=f"💡 進場區 {lo_e:.2f}~{hi_e:.2f}",
+            showarrow=False,
+            font=dict(size=10, color="#ffdd00"),
+            xanchor="right", yanchor="bottom",
+            bgcolor="rgba(20,24,35,0.7)", borderpad=2,
         )
     if target_price:
-        fig.add_hline(
-            y=target_price, line_dash="solid",
-            line_color="rgba(255,165,0,0.85)", line_width=2,
-            annotation_text=f"🎯 目標 {target_price:.2f}",
-            annotation_position="top left",   # 左側避免與壓力衝突
-            annotation_font_color="#ffa500",
-            annotation_font_size=11,
-            row=1, col=1,
+        _hline_clipped(
+            target_price, color="rgba(255,165,0,0.85)", width=2,
+            text=f"🎯 目標 {target_price:.2f}",
+            text_color="#ffa500", text_size=11, text_pos="left",
         )
     if short_stop:
-        fig.add_hline(
-            y=short_stop, line_dash="longdashdot",
-            line_color="rgba(44,160,44,0.9)", line_width=2,
-            annotation_text=f"🛑 短線停損 {short_stop:.2f}",
-            annotation_position="bottom left",
-            annotation_font_color="#2ca02c",
-            annotation_font_size=11,
-            row=1, col=1,
+        _hline_clipped(
+            short_stop, color="rgba(44,160,44,0.9)",
+            width=2, dash="longdashdot",
+            text=f"🛑 短線停損 {short_stop:.2f}",
+            text_color="#2ca02c", text_size=11, text_pos="left",
         )
     if mid_stop and (not short_stop or abs(mid_stop - short_stop) > 0.5):
-        fig.add_hline(
-            y=mid_stop, line_dash="dot",
-            line_color="rgba(44,160,44,0.55)", line_width=1.5,
-            annotation_text=f"中線停損 {mid_stop:.2f}",
-            annotation_position="bottom left",
-            annotation_font_color="#2ca02c",
-            annotation_font_size=10,
-            row=1, col=1,
+        _hline_clipped(
+            mid_stop, color="rgba(44,160,44,0.55)",
+            width=1.5, dash="dot",
+            text=f"中線停損 {mid_stop:.2f}",
+            text_color="#2ca02c", text_size=10, text_pos="left",
         )
 
     # 註：技術指標數值改由 app.py 以 pills 顯示在圖表上方，不再占用圖內空間
@@ -576,16 +586,22 @@ def build(df: pd.DataFrame, title: str = "", patterns=None,
         spikedash="dot", spikecolor="#888", spikethickness=1,
     )
     # 在最上方 subplot 加 range selector 與預設縮放
+    # 移除「全部」按鈕：點到後 X 軸會擴展到資料極限，水平 overlay 會橫
+    # 跨整圖（包括沒有 K 線的空白區）造成嚴重視覺擁擠，且技術分析
+    # 用「全部」沒實際意義（重點都在近期）。
     if start_dt and end_dt:
         fig.update_xaxes(
             rangeselector=dict(
                 buttons=[
-                    dict(count=1, label="1M", step="month", stepmode="backward"),
-                    dict(count=3, label="3M", step="month", stepmode="backward"),
-                    dict(count=6, label="6M", step="month", stepmode="backward"),
+                    dict(count=1, label="1M", step="month",
+                         stepmode="backward"),
+                    dict(count=3, label="3M", step="month",
+                         stepmode="backward"),
+                    dict(count=6, label="6M", step="month",
+                         stepmode="backward"),
                     dict(step="year", stepmode="todate", label="YTD"),
-                    dict(count=1, label="1Y", step="year", stepmode="backward"),
-                    dict(step="all", label="全部"),
+                    dict(count=1, label="1Y", step="year",
+                         stepmode="backward"),
                 ],
                 bgcolor="rgba(40,44,55,0.8)",
                 activecolor="#d62728",
@@ -595,6 +611,12 @@ def build(df: pd.DataFrame, title: str = "", patterns=None,
             range=[start_dt, end_dt],
             row=1, col=1,
         )
+        # 同步所有 subplot 的 X 範圍，避免 K 線 row 跟成交量 / KD row
+        # 顯示不同範圍（rangeselector 只控制 row 1 時其他 subplot 會
+        # 自動展開到資料極限）
+        n_rows = 5 if has_chip else 4
+        for r in range(2, n_rows + 1):
+            fig.update_xaxes(range=[start_dt, end_dt], row=r, col=1)
     return fig
 
 
