@@ -1816,39 +1816,67 @@ elif mode == "📋 實盤回測":
         side_emoji = "🚀" if sess.side == "long" else "🐻"
         side_zh = "做多" if sess.side == "long" else "做空"
         status_emoji = "🟢" if sess.status == "open" else "✅"
+        # 標題用「淨利」(扣手續費/稅/借券) 才反映實戰結果
+        net_pnl = summary["total_pnl_net"]
+        net_pct = summary["total_return_net_pct"]
         title = (f"{status_emoji} #{sess.id} {side_emoji} {side_zh}　"
                  f"{sess.lock_date} → {sess.target_exit_date}　"
                  f"｜ Top {sess.top_n} ｜ 資金 {sess.capital:,.0f}　"
-                 f"｜ P&L {summary['total_pnl']:+,.0f} "
-                 f"({summary['total_return_pct']:+.2f}%)")
+                 f"｜ 淨損益 {net_pnl:+,.0f} ({net_pct:+.2f}%)")
 
         with st.expander(title, expanded=(sess.status == "open")):
             mc1, mc2, mc3, mc4 = st.columns(4)
-            mc1.metric("總 P&L", f"{summary['total_pnl']:+,.0f}",
-                       f"{summary['total_return_pct']:+.2f}%")
-            mc2.metric("結算後資產",
-                       f"{summary['final_capital']:,.0f}")
-            mc3.metric("勝率",
-                       f"{summary['win_rate']:.0f}%",
-                       f"贏 {summary['win']} / 輸 {summary['lose']}")
-            mc4.metric("無資料", summary["no_data"])
+            mc1.metric(
+                "毛利",
+                f"{summary['total_pnl']:+,.0f}",
+                f"{summary['total_return_pct']:+.2f}%",
+            )
+            mc2.metric(
+                "淨利（扣交易成本）",
+                f"{net_pnl:+,.0f}",
+                f"{net_pct:+.2f}%",
+                help="扣除手續費 0.1425% × 2 + 證交稅 0.3%（賣出） + "
+                     "做空融券借券費年化 6%",
+            )
+            mc3.metric(
+                "勝率",
+                f"{summary['win_rate']:.0f}%",
+                f"贏 {summary['win']} / 平 {summary['flat']} / 輸 {summary['lose']}",
+            )
+            mc4.metric(
+                "持有天數",
+                f"{summary['actual_hold_days']} 日",
+                f"預計 {sess.target_exit_date}",
+            )
 
             # 持股明細
             disp = df.copy()
+            # 給「資料來源」一個易懂標示
+            src_label = {"live": "🔴 即時", "cache": "💤 昨收",
+                         "exit": "✅ 已結算", "no_data": "⚠️ 無資料"}
+            if "source" in disp.columns:
+                disp["source"] = disp["source"].map(
+                    lambda s: src_label.get(s, s))
+            disp = disp[["code", "name", "score", "entry", "now",
+                         "pct", "pnl", "cost", "net", "source"]]
             disp.columns = ["代號", "名稱", "分數",
-                            "進場價", "現價", "漲跌%", "P&L"]
+                            "進場", "現價", "漲跌%",
+                            "毛利", "成本", "淨利", "資料"]
             st.dataframe(
                 disp.style.format({
-                    "進場價": "{:.2f}",
+                    "進場": "{:.2f}",
                     "現價": "{:.2f}",
                     "漲跌%": "{:+.2f}%",
-                    "P&L": "{:+,.0f}",
+                    "毛利": "{:+,.0f}",
+                    "成本": "{:,.0f}",
+                    "淨利": "{:+,.0f}",
                 }, na_rep="—").map(
-                    lambda v: ("color: #4ade80" if isinstance(v, (int, float))
-                               and v > 0 else
-                               "color: #f87171" if isinstance(v, (int, float))
-                               and v < 0 else ""),
-                    subset=["漲跌%", "P&L"],
+                    lambda v: ("color: #4ade80"
+                               if isinstance(v, (int, float)) and v > 0
+                               else "color: #f87171"
+                               if isinstance(v, (int, float)) and v < 0
+                               else ""),
+                    subset=["漲跌%", "毛利", "淨利"],
                 ),
                 use_container_width=True, hide_index=True,
             )

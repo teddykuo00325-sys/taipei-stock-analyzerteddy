@@ -60,6 +60,30 @@ def _conn() -> sqlite3.Connection:
     return c
 
 
+def _current_price(code: str) -> tuple[float | None, str]:
+    """取得即時當前價（用於 P&L 計算）.
+
+    優先順序：
+      1. live MIS 即時（盤中或剛收盤後最準確）
+      2. price_cache 最新收盤（盤後或停牌時）
+    回傳 (price, source) 其中 source ∈ {'live', 'cache'} or (None, 'none').
+    """
+    try:
+        qs = live.quotes([code])
+        q = qs.get(code)
+        if q and q.current and q.current > 0:
+            return float(q.current), "live"
+    except Exception:
+        pass
+    try:
+        df = price_cache._load(code)
+        if not df.empty:
+            return float(df["close"].iloc[-1]), "cache"
+    except Exception:
+        pass
+    return None, "none"
+
+
 @dataclass
 class Holding:
     session_id: int
@@ -73,17 +97,12 @@ class Holding:
     position_size: float
 
     def current_price(self) -> float | None:
-        """從 price_cache 取最新收盤；無資料回 None."""
-        try:
-            df = price_cache._load(self.code)
-            if df.empty:
-                return None
-            return float(df["close"].iloc[-1])
-        except Exception:
-            return None
+        """取得即時當前價：優先 live MIS，其次 price_cache 最新收盤."""
+        p, _ = _current_price(self.code)
+        return p
 
     def pnl(self, side: str, ref_price: float | None = None) -> float | None:
-        """回傳 P&L (TWD)；ref_price 沒給則用最新收盤."""
+        """回傳 P&L (TWD)；ref_price 沒給則用即時價."""
         price = ref_price or self.exit_price or self.current_price()
         if price is None:
             return None
@@ -154,7 +173,9 @@ def lock_session(side: Literal["long", "short"],
     回傳 session_id.
     """
     today = date.today().isoformat()
-    target_exit = (date.today() + timedelta(days=hold_days)).isoformat()
+    # 用交易日（business day）計算結算日，避免落到週末
+    target_exit = (pd.Timestamp(date.today())
+                   + pd.tseries.offsets.BDay(hold_days)).date().isoformat()
     top_n = len(picks)
     if top_n == 0:
         raise ValueError("picks 不可為空")
@@ -265,7 +286,11 @@ def list_holdings(session_id: int) -> list[Holding]:
 
 
 def close_session(session_id: int) -> tuple[int, float]:
-    """以最新收盤結算所有持股；回傳 (結算檔數, 總 P&L)."""
+    """以即時 live MIS（盤中或剛收盤）結算所有持股；回傳 (結算檔數, 總 P&L 毛利).
+
+    與 session_summary 同樣使用 live → cache fallback 策略，避免結算時拿到
+    過期的 EOD 收盤而誤算 P&L。
+    """
     sess = get_session(session_id)
     if not sess:
         raise ValueError(f"找不到 session {session_id}")
@@ -273,13 +298,33 @@ def close_session(session_id: int) -> tuple[int, float]:
         return 0, 0.0
     today = date.today().isoformat()
     holdings = list_holdings(session_id)
+    open_codes = [h.code for h in holdings if h.exit_price is None]
+    # 批次抓 live
+    live_map: dict = {}
+    if open_codes:
+        try:
+            qs = live.quotes(open_codes)
+            for code, q in qs.items():
+                if q and q.current and q.current > 0:
+                    live_map[code] = float(q.current)
+        except Exception:
+            pass
+
     total_pnl = 0.0
     closed = 0
     with _lock, _conn() as c:
         for h in holdings:
             if h.exit_price is not None:
                 continue
-            cur = h.current_price()
+            cur = live_map.get(h.code)
+            if cur is None:
+                # fallback: price_cache 最新收盤
+                try:
+                    df = price_cache._load(h.code)
+                    if not df.empty:
+                        cur = float(df["close"].iloc[-1])
+                except Exception:
+                    pass
             if cur is None:
                 continue
             c.execute(
@@ -299,45 +344,100 @@ def close_session(session_id: int) -> tuple[int, float]:
 
 
 def session_summary(session_id: int) -> dict:
-    """單一 session 的彙整：總 P&L、勝率、最佳/最差檔."""
+    """單一 session 的彙整：總 P&L、勝率、最佳/最差檔.
+
+    批次抓 live 報價（一次 API 取所有 holdings），再退到 price_cache。
+    """
     sess = get_session(session_id)
     if not sess:
         return {}
     holdings = list_holdings(session_id)
+    if not holdings:
+        return {}
+
+    # 批次抓 live MIS（10 檔以內一次 API 解決，比 holding-by-holding 快數倍）
+    open_codes = [h.code for h in holdings if h.exit_price is None]
+    live_map: dict = {}
+    if open_codes:
+        try:
+            qs = live.quotes(open_codes)
+            for code, q in qs.items():
+                if q and q.current and q.current > 0:
+                    live_map[code] = float(q.current)
+        except Exception:
+            pass
+
+    def _ref_price(h: Holding) -> tuple[float | None, str]:
+        if h.exit_price is not None:
+            return h.exit_price, "exit"
+        if h.code in live_map:
+            return live_map[h.code], "live"
+        try:
+            df = price_cache._load(h.code)
+            if not df.empty:
+                return float(df["close"].iloc[-1]), "cache"
+        except Exception:
+            pass
+        return None, "none"
+
+    # 計算實際持有天數（用交易日）
+    today_dt = pd.Timestamp(date.today())
+    lock_dt = pd.Timestamp(sess.lock_date)
+    actual_hold_days = max(0, (today_dt - lock_dt).days)
+
     rows = []
-    total_pnl = 0.0
+    total_pnl_gross = 0.0
+    total_costs = 0.0
     win = 0
+    flat = 0
     miss = 0
     for h in holdings:
-        cur = h.exit_price or h.current_price()
+        cur, src = _ref_price(h)
         if cur is None:
             miss += 1
             rows.append({
                 "code": h.code, "name": h.name, "score": h.score,
                 "entry": h.entry_price, "now": None,
-                "pct": None, "pnl": None,
+                "pct": None, "pnl": None, "cost": 0,
+                "net": None, "source": "no_data",
             })
             continue
         pct = h.pnl_pct(sess.side, ref_price=cur)
-        pnl = h.pnl(sess.side, ref_price=cur)
-        if pnl is not None and pnl > 0:
+        pnl_gross = h.pnl(sess.side, ref_price=cur) or 0
+        # 估算進出場成本
+        costs = estimate_costs(sess.side, h.entry_price, cur,
+                                h.position_size, actual_hold_days)
+        cost_total = costs["total"]
+        pnl_net = pnl_gross - cost_total
+        if pnl_net > 1:
             win += 1
-        total_pnl += pnl or 0
+        elif pnl_net > -1:
+            flat += 1
+        total_pnl_gross += pnl_gross
+        total_costs += cost_total
         rows.append({
             "code": h.code, "name": h.name, "score": h.score,
             "entry": h.entry_price, "now": cur,
-            "pct": pct, "pnl": pnl,
+            "pct": pct, "pnl": pnl_gross,
+            "cost": cost_total, "net": pnl_net,
+            "source": src,
         })
     df = pd.DataFrame(rows)
     valid = len(holdings) - miss
+    lose = valid - win - flat
+    total_pnl_net = total_pnl_gross - total_costs
     return {
         "session": sess,
         "holdings_df": df,
-        "total_pnl": total_pnl,
-        "total_return_pct": total_pnl / sess.capital * 100,
-        "win": win, "lose": valid - win, "no_data": miss,
+        "total_pnl": total_pnl_gross,           # 毛利
+        "total_costs": total_costs,             # 總成本
+        "total_pnl_net": total_pnl_net,         # 淨利（扣手續費 / 證交稅 / 借券）
+        "total_return_pct": total_pnl_gross / sess.capital * 100,
+        "total_return_net_pct": total_pnl_net / sess.capital * 100,
+        "actual_hold_days": actual_hold_days,
+        "win": win, "lose": lose, "flat": flat, "no_data": miss,
         "win_rate": (win / valid * 100) if valid else 0,
-        "final_capital": sess.capital + total_pnl,
+        "final_capital": sess.capital + total_pnl_net,
     }
 
 
@@ -347,6 +447,40 @@ def delete_session(session_id: int) -> None:
         c.execute("DELETE FROM realbt_holding WHERE session_id=?",
                   (session_id,))
         c.execute("DELETE FROM realbt_session WHERE id=?", (session_id,))
+
+
+# ---------------------------------------------------------------
+# 交易成本估算（台股實際費率）
+# ---------------------------------------------------------------
+COMMISSION_RATE = 0.001425   # 手續費 0.1425% (買、賣各收一次)
+TAX_RATE_LONG = 0.003        # 證交稅 0.3%（賣出時）
+TAX_RATE_SHORT = 0.0015      # 當沖賣出證交稅減半 0.15%；融券先不用稅
+SHORT_BORROW_ANNUAL = 0.06   # 融券借券費年化 ~6%（券商而異）
+
+
+def estimate_costs(side: str, entry_price: float, exit_price: float,
+                   position_size: float, hold_days: int) -> dict:
+    """估算單一持股的進出場成本.
+
+    side='long': 買進 + 賣出 → 手續費×2 + 賣出證交稅
+    side='short': 融券賣出 + 回補買進 → 手續費×2 + 賣出證交稅 + 借券利息
+    回傳 {commission, tax, borrow, total}.
+    """
+    # 手續費（買 + 賣各一次）
+    commission = (position_size + position_size *
+                  (exit_price / entry_price)) * COMMISSION_RATE
+    if side == "long":
+        # 賣出端的部位金額 ≈ position_size * (exit/entry)
+        tax = position_size * (exit_price / entry_price) * TAX_RATE_LONG
+        borrow = 0.0
+    else:
+        tax = position_size * TAX_RATE_LONG  # 融券回補時賣出端是進場
+        borrow = position_size * SHORT_BORROW_ANNUAL * (hold_days / 365)
+    total = commission + tax + borrow
+    return {
+        "commission": commission, "tax": tax, "borrow": borrow,
+        "total": total,
+    }
 
 
 # ---------------------------------------------------------------
