@@ -44,6 +44,7 @@ class Diagnosis:
     margin_info: dict | None = None
     margin_note: str = ""
     margin_score: int = 0
+    margin_score_detail: object | None = None  # MarginScore 五維度物件
     wave_label: str = ""
     wave_direction: str = ""
     wave_confidence: str = ""
@@ -189,13 +190,40 @@ def diagnose(df: pd.DataFrame,
     marg_info = None
     marg_s = 0
     marg_note = ""
+    marg_score_obj = None  # 5 維度詳細物件（給 UI 拆解顯示）
     if include_chips and code:
         try:
-            price_up = df["close"].iloc[-1] > df["close"].iloc[-2] \
-                if len(df) >= 2 else None
             marg_info = margin.for_code(code)
-            marg_s, marg_note_raw = margin.score_adj(code, price_up=price_up)
-            marg_note = marg_note_raw
+            # 優先用 5 維度 margin_score；ETF / 無融資商品回 None
+            try:
+                from . import margin_score as _ms
+                ms = _ms.score(code, price_df=df)
+                if ms is not None:
+                    marg_score_obj = ms
+                    # 將加權總分 (-10~+10) 線性映射到 score 系統 (~ -15~+15)
+                    marg_s = int(round(ms.total * 1.5))
+                    # 取「絕對值最大」的那項當主要說明
+                    dims = [
+                        ("4 象限", ms.quadrant, ms.notes[0]),
+                        ("券資比", ms.short_ratio, ms.notes[1]),
+                        ("回補壓力", ms.short_pressure, ms.notes[2]),
+                        ("融資使用率", ms.margin_usage, ms.notes[3]),
+                        ("5/20MA 趨勢", ms.trend, ms.notes[4]),
+                    ]
+                    dims.sort(key=lambda x: abs(x[1]), reverse=True)
+                    marg_note = f"[{dims[0][0]}] {dims[0][2]}"
+                else:
+                    # ETF / 無融資資料 → 退回原邏輯
+                    price_up = (df["close"].iloc[-1] > df["close"].iloc[-2]
+                                if len(df) >= 2 else None)
+                    marg_s, marg_note = margin.score_adj(
+                        code, price_up=price_up)
+            except Exception:
+                # 任何例外 → 退回原邏輯
+                price_up = (df["close"].iloc[-1] > df["close"].iloc[-2]
+                            if len(df) >= 2 else None)
+                marg_s, marg_note = margin.score_adj(
+                    code, price_up=price_up)
         except Exception:
             pass
 
@@ -348,6 +376,7 @@ def diagnose(df: pd.DataFrame,
         institutional_info=inst_info, institutional_note=inst_note,
         institutional_score=inst_s,
         margin_info=marg_info, margin_note=marg_note, margin_score=marg_s,
+        margin_score_detail=marg_score_obj,
         wave_label=w.label, wave_direction=w.direction,
         wave_confidence=w.confidence, wave_note=w.note, wave_score=wave_s,
         econ=econ_obj, econ_score=econ_s, econ_note=econ_note,

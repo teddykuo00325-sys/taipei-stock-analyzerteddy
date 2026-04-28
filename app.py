@@ -9,10 +9,10 @@ import streamlit as st
 import logging
 
 from analyzer import (chart, data, diagnosis, etf, etf_scraper,
-                      indicators, industry, live, marketdata,
-                      moneyflow, price_cache, realbacktest, revenue,
-                      schools, screener, shareholders, storage, targets,
-                      watchlist)
+                      indicators, industry, live, margin_history,
+                      marketdata, moneyflow, price_cache, realbacktest,
+                      revenue, schools, screener, shareholders, storage,
+                      targets, watchlist)
 
 logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 
@@ -512,6 +512,12 @@ if "_ohlcv_restored" not in st.session_state:
             ok, msg = realbacktest.auto_restore()
             if ok:
                 st.toast(f"☁️ 實盤回測 DB 已還原：{msg}", icon="✅")
+        except Exception:
+            pass
+        try:
+            ok, msg = margin_history.auto_restore()
+            if ok:
+                st.toast(f"☁️ 融資融券歷史已還原：{msg}", icon="✅")
         except Exception:
             pass
 # 處理上一輪 rerun 設定的模式切換意圖（必須在 widget 渲染前）
@@ -2891,7 +2897,79 @@ else:
             mc[2].metric("資券互抵",
                          f"{marg_info['day_trade_offset']:,} 張")
             mc[3].metric("籌碼加權", f"{diag.margin_score:+d}")
-            if diag.margin_note:
+
+            # === 5 維度評分明細 ===
+            ms = diag.margin_score_detail
+            if ms is not None:
+                st.markdown(
+                    "##### 📊 5 維度評分明細（B 完整版）"
+                )
+                # Top metrics
+                ms_c1, ms_c2, ms_c3 = st.columns(3)
+                ms_c1.metric("加權總分", f"{ms.total:+.2f}",
+                             help="-10 ~ +10 分；映射到主評分系統 ~"
+                                  f" {int(ms.total*1.5):+d}")
+                ms_c2.metric("5 日累積漲跌",
+                             f"{ms.price_5d_pct:+.2f}%"
+                             if ms.price_5d_pct is not None else "—")
+                hist_status = (f"{ms.n_history_days} 日"
+                               + (" ✅" if ms.n_history_days >= 20
+                                  else " ⏳ 未足 20 日"))
+                ms_c3.metric("歷史累積", hist_status,
+                             help="維度 5 (5/20MA 趨勢) 需 20 日歷史"
+                                  "才會啟用")
+
+                # 5 維度橫向 bar chart
+                import plotly.graph_objects as _go_ms
+                dim_names = ["4 象限\n(權重30%)", "券資比\n(動態P值,20%)",
+                             "回補壓力\n(15%)", "融資使用率\n(15%)",
+                             "5/20MA 趨勢\n(20%)"]
+                dim_scores = [ms.quadrant, ms.short_ratio,
+                              ms.short_pressure, ms.margin_usage,
+                              ms.trend]
+                dim_colors = ["#d62728" if s > 0 else
+                              "#2ca02c" if s < 0 else "#888"
+                              for s in dim_scores]
+                bar = _go_ms.Figure(_go_ms.Bar(
+                    x=dim_scores, y=dim_names, orientation="h",
+                    marker_color=dim_colors,
+                    text=[f"{s:+d}" for s in dim_scores],
+                    textposition="auto",
+                ))
+                bar.update_layout(
+                    height=240, margin=dict(l=10, r=10, t=10, b=10),
+                    yaxis=dict(autorange="reversed"),
+                    xaxis_title="分數（紅=偏多／綠=偏空）",
+                    showlegend=False,
+                )
+                st.plotly_chart(bar, use_container_width=True,
+                                config={"displayModeBar": False})
+
+                # 各維度說明
+                with st.expander("📝 各維度評分依據", expanded=False):
+                    labels = ["四象限", "券資比", "回補壓力",
+                              "融資使用率", "5/20MA 趨勢"]
+                    scores = [ms.quadrant, ms.short_ratio,
+                              ms.short_pressure, ms.margin_usage,
+                              ms.trend]
+                    for lbl, sc, note in zip(labels, scores, ms.notes):
+                        sign = ("🔴" if sc > 0 else
+                                "🟢" if sc < 0 else "⚪")
+                        st.markdown(
+                            f"{sign} **{lbl}** ({sc:+d})：{note}")
+                    # 輔助數據
+                    st.caption(
+                        f"📌 **輔助數據** — "
+                        f"券資比: {ms.short_to_margin_ratio*100:.1f}%"
+                        f" ｜ 回補天數: "
+                        + (f"{ms.days_to_cover:.1f}"
+                           if ms.days_to_cover is not None else "—")
+                        + " ｜ 融資使用率: "
+                        + (f"{ms.margin_usage_pct*100:.1f}%"
+                           if ms.margin_usage_pct is not None else "—")
+                    )
+            elif diag.margin_note:
+                # ETF / 無融資商品退回原邏輯時顯示
                 st.caption(f"📝 {diag.margin_note}")
 
         st.markdown("#### 📦 股權分布 (集保 TDCC · 每週更新)")

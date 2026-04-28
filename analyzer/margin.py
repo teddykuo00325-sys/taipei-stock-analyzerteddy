@@ -46,7 +46,8 @@ def _fetch_raw() -> pd.DataFrame:
 _cache: dict = {"time": 0, "df": None}
 
 
-def snapshot(max_age_sec: int = 3600) -> pd.DataFrame:
+def snapshot(max_age_sec: int = 3600,
+             auto_append_history: bool = True) -> pd.DataFrame:
     now = time()
     if _cache["df"] is not None and now - _cache["time"] < max_age_sec:
         return _cache["df"]
@@ -60,6 +61,15 @@ def snapshot(max_age_sec: int = 3600) -> pd.DataFrame:
     df["ShortChange"] = df["ShortToday"] - df["ShortPrev"]
     _cache["df"] = df
     _cache["time"] = now
+
+    # 自動把今日資料 append 到歷史 DB（給 5/20 日趨勢分析用）
+    if auto_append_history:
+        try:
+            from . import margin_history
+            margin_history.append_today(df)
+        except Exception:
+            pass
+
     return df
 
 
