@@ -520,6 +520,12 @@ if "_ohlcv_restored" not in st.session_state:
                 st.toast(f"☁️ 融資融券歷史已還原：{msg}", icon="✅")
         except Exception:
             pass
+        try:
+            ok, msg = watchlist.auto_restore()
+            if ok:
+                st.toast(f"☁️ 收藏清單已還原：{msg}", icon="✅")
+        except Exception:
+            pass
 # 處理上一輪 rerun 設定的模式切換意圖（必須在 widget 渲染前）
 if "_mode_override" in st.session_state:
     st.session_state.app_mode = st.session_state.pop("_mode_override")

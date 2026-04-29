@@ -199,7 +199,16 @@ def auto_restore() -> tuple[bool, str]:
             return False, f"本機已有 {s['rows']} 筆"
     except Exception:
         pass
-    return storage.download_db(DB_PATH, repo_path=REPO_PATH)
+    ok, msg = storage.download_db(DB_PATH, repo_path=REPO_PATH)
+    # 清掉 margin 模組的 in-memory 快取，避免下載完還用到下載前的空 df
+    if ok:
+        try:
+            from . import margin
+            margin._cache["df"] = None
+            margin._cache["time"] = 0
+        except Exception:
+            pass
+    return ok, msg
 
 
 def backup_now(message: str | None = None) -> tuple[bool, str]:
