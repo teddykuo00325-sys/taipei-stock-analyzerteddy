@@ -101,6 +101,31 @@ class Holding:
         p, _ = _current_price(self.code)
         return p
 
+    def expected_exit_price(self,
+                             target_exit_date: str | None) -> float | None:
+        """取「持有期到期 vs 今日」較早日期的收盤價（為歷史回測核心邏輯）.
+
+        - target_exit_date 為 None / 未來 → 回最新收盤
+        - target_exit_date 已過期 → 回該日（或之前最近交易日）的收盤
+        """
+        if target_exit_date is None:
+            return self.current_price()
+        try:
+            target_dt = date.fromisoformat(target_exit_date)
+        except Exception:
+            return self.current_price()
+        cutoff = min(target_dt, date.today())
+        try:
+            df = price_cache._load(self.code)
+            if df.empty:
+                return None
+            sub = df[df.index <= pd.Timestamp(cutoff)]
+            if sub.empty:
+                return None
+            return float(sub["close"].iloc[-1])
+        except Exception:
+            return None
+
     def pnl(self, side: str, ref_price: float | None = None) -> float | None:
         """回傳 P&L (TWD)；ref_price 沒給則用即時價."""
         price = ref_price or self.exit_price or self.current_price()
@@ -214,6 +239,64 @@ def lock_session(side: Literal["long", "short"],
                 (sid, code, str(p["名稱"]),
                  int(p.get("分數", 0)), today,
                  entry_price, per_stock),
+            )
+    return sid
+
+
+def lock_session_historical(side: Literal["long", "short"],
+                             as_of_date: str,
+                             picks: list[dict],
+                             capital: float = 1_000_000,
+                             hold_days: int = 5,
+                             note: str | None = None) -> int:
+    """歷史日期回測：以指定日期當進場日鎖定 session.
+
+    picks: 來自 screener.screen_historical(as_of_date) 的結果
+    entry_date 設為 as_of_date；entry_price 為 as_of_date 的收盤價。
+    target_exit_date = as_of_date + hold_days。
+    """
+    try:
+        as_of = date.fromisoformat(as_of_date)
+    except Exception:
+        raise ValueError(f"as_of_date 格式錯誤：{as_of_date}（需 YYYY-MM-DD）")
+    target_exit = (as_of + timedelta(days=hold_days)).isoformat()
+    top_n = len(picks)
+    if top_n == 0:
+        raise ValueError("picks 不可為空")
+    per_stock = capital / top_n
+
+    with _lock, _conn() as c:
+        # 同一天同方向同 capital 已有 session → 拒絕
+        existing = c.execute(
+            "SELECT id FROM realbt_session "
+            "WHERE lock_date=? AND side=? AND status='open' AND note LIKE ?",
+            (as_of_date, side, "%歷史回測%"),
+        ).fetchone()
+        if existing:
+            raise ValueError(
+                f"{as_of_date} 已有 {side} 歷史回測 session（id={existing[0]}），"
+                f"請先刪除舊的或選擇不同 hold_days")
+
+        full_note = f"歷史回測 ({as_of_date} → {target_exit}) " \
+                    + (note or f"持有 {hold_days} 日")
+        cur = c.execute(
+            "INSERT INTO realbt_session "
+            "(lock_date, side, top_n, capital, target_exit_date, "
+            " status, note) VALUES (?,?,?,?,?,?,?)",
+            (as_of_date, side, top_n, capital, target_exit, "open", full_note),
+        )
+        sid = cur.lastrowid
+
+        for p in picks:
+            c.execute(
+                "INSERT INTO realbt_holding "
+                "(session_id, code, name, score, entry_date, entry_price, "
+                " position_size) VALUES (?,?,?,?,?,?,?)",
+                (sid, str(p["代號"]), str(p["名稱"]),
+                 int(p.get("分數", 0)),
+                 as_of_date,                  # 進場日 = 歷史日期
+                 float(p["收盤"]),             # 進場價 = 該日收盤
+                 per_stock),
             )
     return sid
 
@@ -367,9 +450,24 @@ def session_summary(session_id: int) -> dict:
         except Exception:
             pass
 
+    # 持有期到期判斷：歷史回測 / 普通回測共用
+    target_exit_passed = False
+    if sess.target_exit_date:
+        try:
+            target_dt = date.fromisoformat(sess.target_exit_date)
+            target_exit_passed = date.today() >= target_dt
+        except Exception:
+            pass
+
     def _ref_price(h: Holding) -> tuple[float | None, str]:
         if h.exit_price is not None:
             return h.exit_price, "exit"
+        # 若持有期已到期 → 用 target_exit_date 那日收盤（鎖定 P&L）
+        # 否則 → 用 live MIS 或 price_cache 最新（追蹤中）
+        if target_exit_passed:
+            p = h.expected_exit_price(sess.target_exit_date)
+            if p is not None:
+                return p, "expired"
         if h.code in live_map:
             return live_map[h.code], "live"
         try:

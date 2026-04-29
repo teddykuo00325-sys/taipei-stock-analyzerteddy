@@ -1807,6 +1807,76 @@ elif mode == "📋 實盤回測":
                 except ValueError as e:
                     st.warning(f"⚠️ {e}")
 
+    # --- 側邊欄：📅 歷史日期回測 ---
+    with st.sidebar.expander("📅 歷史日期回測", expanded=False):
+        st.caption("選一個過去日期，模擬「假設那天照系統建議進場」，"
+                   "持有 X 日後（或到今天為止）的實際結果。")
+        from datetime import date as _date_h, timedelta as _td_h
+        max_back_dt = _date_h.today() - _td_h(days=1)
+        default_dt = _date_h.today() - _td_h(days=10)
+        h_date = st.date_input(
+            "進場日期",
+            value=default_dt,
+            min_value=_date_h.today() - _td_h(days=400),
+            max_value=max_back_dt,
+            key="h_date",
+        )
+        h_top_n = st.number_input("Top N（多/空各幾檔）", 1, 20, 5,
+                                   key="h_top_n")
+        h_capital = st.number_input(
+            "資金 (TWD)", 100_000, 10_000_000, 1_000_000, 100_000,
+            key="h_capital",
+        )
+        h_hold = st.number_input("持有天數", 1, 60, 5, key="h_hold")
+        h_note = st.text_input(
+            "備註", value=f"{h_date.isoformat()} 歷史測試",
+            key="h_note",
+        )
+        if st.button("🔍 跑歷史回測", use_container_width=True,
+                     key="h_run", type="primary"):
+            as_of = h_date.isoformat()
+            progress = st.progress(0.0, text="準備中…")
+
+            def _h_cb(pct, msg):
+                progress.progress(min(pct, 1.0), text=msg)
+            try:
+                with st.spinner("跑歷史日期掃描中…"):
+                    res_h = screener.screen_historical(
+                        as_of_date=as_of,
+                        min_avg_volume_lots=1000,
+                        top_n=int(h_top_n),
+                        pre_filter_lots_today=200,
+                        progress_cb=_h_cb,
+                    )
+                progress.empty()
+                if res_h["passed"] == 0:
+                    st.error("該日期無通過篩選的股票（可能 cache 沒覆蓋此日）")
+                else:
+                    long_h = res_h["long"].head(h_top_n).to_dict("records")
+                    short_h = res_h["short"].head(h_top_n).to_dict("records")
+                    try:
+                        sid_lh = realbacktest.lock_session_historical(
+                            "long", as_of, long_h, capital=h_capital,
+                            hold_days=int(h_hold), note=h_note)
+                        sid_sh = realbacktest.lock_session_historical(
+                            "short", as_of, short_h, capital=h_capital,
+                            hold_days=int(h_hold), note=h_note)
+                        st.success(
+                            f"✅ 歷史回測 sessions 已建立："
+                            f"long#{sid_lh} + short#{sid_sh}")
+                        if storage.is_configured():
+                            try:
+                                realbacktest.backup_now(
+                                    message=f"historical lock {as_of}")
+                            except Exception:
+                                pass
+                        st.rerun()
+                    except ValueError as e:
+                        st.warning(f"⚠️ {e}")
+            except Exception as e:
+                progress.empty()
+                st.error(f"執行失敗：{e}")
+
     # --- 主畫面：列出所有 session ---
     sessions = realbacktest.list_sessions()
     if not sessions:

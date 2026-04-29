@@ -113,6 +113,125 @@ def _load_from_cache(code: str, period: str) -> pd.DataFrame | None:
         return None
 
 
+def _score_one_at_date(code: str, name: str, df_full: pd.DataFrame,
+                        as_of_date: str,
+                        min_avg_volume_lots: int) -> dict | None:
+    """歷史回測版 _score_one：把 df 截斷到 as_of_date 之前再評分.
+
+    跳過 chip 資料（institutional / margin / shareholders 都是 current-only）。
+    """
+    try:
+        cutoff = pd.Timestamp(as_of_date)
+        df = df_full[df_full.index <= cutoff]
+        if len(df) < 60:
+            return None
+        avg_vol = float(df["volume"].tail(20).mean())
+        if avg_vol < min_avg_volume_lots * 1000:
+            return None
+        dff = indicators.add_all(df)
+        # 歷史回測：跳過所有 chip 資料（無歷史快照可用）
+        d = diagnosis.diagnose(dff, code=code,
+                               include_chips=False, detailed=False)
+        last = dff.iloc[-1]
+        prev = dff.iloc[-2] if len(dff) >= 2 else last
+        return {
+            "代號": code,
+            "名稱": name,
+            "收盤": round(float(last["close"]), 2),
+            "漲跌%": round((last["close"] / prev["close"] - 1) * 100, 2)
+                       if prev["close"] else 0,
+            "分數": d.score,
+            "評估": d.stance,
+            "建議": d.action,
+            "均線": d.ma_state,
+            "波浪": d.wave_label,
+            "KD": f"{last['k']:.0f}/{last['d']:.0f}",
+            "RSI": round(float(last["rsi"]), 1),
+            "日均量(張)": int(avg_vol / 1000),
+            "葛蘭碧": (f"#{d.granville.last_signal.rule} "
+                       f"{d.granville.last_signal.name}"
+                       if (getattr(d, "granville", None) and
+                           d.granville.last_signal) else "—"),
+            "目標價": round(d.target_price, 2) if d.target_price else None,
+            "短線停損": round(d.short_stop, 2) if d.short_stop else None,
+        }
+    except Exception:
+        return None
+
+
+def screen_historical(
+    as_of_date: str,
+    min_avg_volume_lots: int = 1000,
+    top_n: int = 5,
+    pre_filter_lots_today: int = 200,
+    progress_cb=None,
+    limit: int | None = None,
+) -> dict:
+    """以 as_of_date 那天的 K 線為基準跑選股（歷史回測用）.
+
+    使用 price_cache 既有資料；不會去 yfinance 取新資料。
+    回傳結構同 screen()，但無 _diag/_df_tail（簡化）。
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from . import universe as _u
+
+    snap = _u.snapshot()
+    if pre_filter_lots_today > 0:
+        snap = snap[snap["TradeVolume"] >= pre_filter_lots_today * 1000]
+    snap = snap.sort_values("TradeVolume", ascending=False) \
+               .reset_index(drop=True)
+    if limit:
+        snap = snap.head(limit)
+    codes = snap["Code"].tolist()
+    names = dict(zip(snap["Code"], snap["Name"]))
+    total = len(codes)
+
+    if progress_cb:
+        progress_cb(0.01, f"從快取載入 {total} 檔 K 線（截至 {as_of_date}）…")
+
+    # 並行載入 cache + 評分
+    results: list[dict] = []
+    done = 0
+
+    def _process(code: str) -> dict | None:
+        try:
+            df = price_cache._load(code)
+            if df is None or df.empty:
+                return None
+            return _score_one_at_date(
+                code, names.get(code, code), df, as_of_date,
+                min_avg_volume_lots)
+        except Exception:
+            return None
+
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        futures = {ex.submit(_process, c): c for c in codes}
+        for fut in as_completed(futures):
+            done += 1
+            if progress_cb and done % 50 == 0:
+                progress_cb(0.05 + (done / max(total, 1)) * 0.90,
+                            f"分析 {done}/{total}…")
+            row = fut.result()
+            if row:
+                results.append(row)
+
+    if progress_cb:
+        progress_cb(1.0, f"完成：{len(results)} 檔通過篩選")
+
+    full_df = pd.DataFrame(results)
+    if full_df.empty:
+        return {"long": full_df, "short": full_df, "full": full_df,
+                "total": total, "passed": 0,
+                "as_of_date": as_of_date}
+    long_top = full_df.nlargest(top_n, "分數").reset_index(drop=True)
+    short_top = full_df.nsmallest(top_n, "分數").reset_index(drop=True)
+    return {
+        "long": long_top, "short": short_top, "full": full_df,
+        "total": total, "passed": len(full_df),
+        "as_of_date": as_of_date,
+    }
+
+
 def screen(
     min_avg_volume_lots: int = 1000,
     top_n: int = 20,
