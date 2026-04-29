@@ -180,12 +180,17 @@ def _today_key() -> str:
     return _dt.date.today().isoformat()
 
 
+# 版本標記：當 Diagnosis dataclass 結構改動時 bump 此版本，強制清舊 cache
+DIAG_SCHEMA_VERSION = "v2_granville"
+
+
 @st.cache_data(ttl=900, show_spinner=False)
 def cached_analyze(code: str, period: str, _day: str,
                    include_weekly: bool = True,
-                   school: str | None = None):
+                   school: str | None = None,
+                   _schema: str = DIAG_SCHEMA_VERSION):
     """完整分析：df + indicators + weekly + diagnosis. TTL 15 min.
-    參數 _day 當日期 key，自動每日失效."""
+    參數 _day 當日期 key，自動每日失效；_schema 結構版本不同時自動失效."""
     df_raw = data.fetch(code, period=period, interval="1d")
     df_full = indicators.add_all(df_raw)
     wk = None
@@ -2345,11 +2350,17 @@ else:
         elif "空頭" in diag.weekly_note or "偏空" in diag.weekly_note:
             weekly_contrib = -weights.get("weekly_bias", 8)
 
+        # 用 getattr 保護，避免 cached_analyze 回傳的舊 Diagnosis 物件沒有
+        # 新加的欄位（部署過渡期 / Streamlit cache 殘留）
+        gv_score = getattr(diag, "granville_score", 0)
+        gv_note = getattr(diag, "granville_note", "") or "無訊號"
+        gv_obj_ui = getattr(diag, "granville", None)
+        margin_detail_ui = getattr(diag, "margin_score_detail", None)
+
         items = [
             ("📐 均線排列", ma_contrib, diag.ma_state),
             ("🌊 波浪位置", diag.wave_score, diag.wave_label),
-            ("📏 葛蘭碧八法", diag.granville_score,
-             diag.granville_note or "無訊號"),
+            ("📏 葛蘭碧八法", gv_score, gv_note),
             ("🏦 法人買賣", diag.institutional_score,
              diag.institutional_note or "中性"),
             ("💰 融資券", diag.margin_score,
@@ -2725,7 +2736,9 @@ else:
 
         # === 葛蘭碧八大法則 ===
         st.markdown("#### 📏 葛蘭碧 (Granville) 八大法則")
-        gv = diag.granville
+        gv = getattr(diag, "granville", None)
+        gv_score_safe = getattr(diag, "granville_score", 0)
+        gv_note_safe = getattr(diag, "granville_note", "")
         if gv is None:
             st.caption("無分析資料")
         else:
@@ -2738,7 +2751,7 @@ else:
                            f"{emoji} #{ls.rule} {ls.name}",
                            f"強度 {ls.strength}/3")
                 gc3.metric("葛蘭碧分數",
-                           f"{diag.granville_score:+d}",
+                           f"{gv_score_safe:+d}",
                            f"乖離 {ls.deviation_pct:+.2f}%")
                 st.markdown(
                     f"📍 訊號日期 **{ls.date}** ｜ 收盤 {ls.price:.2f} ｜ "
@@ -2746,8 +2759,8 @@ else:
                 st.info(f"📝 {ls.note}")
             else:
                 gc2.metric("最近訊號", "無新訊號")
-                gc3.metric("葛蘭碧分數", f"{diag.granville_score:+d}")
-                st.caption(diag.granville_note)
+                gc3.metric("葛蘭碧分數", f"{gv_score_safe:+d}")
+                st.caption(gv_note_safe)
 
             # 近 60 根 K 的訊號歷史
             if gv.history:
