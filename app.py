@@ -9,10 +9,10 @@ import streamlit as st
 import logging
 
 from analyzer import (chart, data, diagnosis, etf, etf_scraper,
-                      indicators, industry, live, margin_history,
-                      marketdata, moneyflow, price_cache, realbacktest,
-                      revenue, schools, screener, shareholders, storage,
-                      targets, watchlist)
+                      granville, indicators, industry, live,
+                      margin_history, marketdata, moneyflow, price_cache,
+                      realbacktest, revenue, schools, screener,
+                      shareholders, storage, targets, wave, watchlist)
 
 logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 
@@ -2348,6 +2348,8 @@ else:
         items = [
             ("📐 均線排列", ma_contrib, diag.ma_state),
             ("🌊 波浪位置", diag.wave_score, diag.wave_label),
+            ("📏 葛蘭碧八法", diag.granville_score,
+             diag.granville_note or "無訊號"),
             ("🏦 法人買賣", diag.institutional_score,
              diag.institutional_note or "中性"),
             ("💰 融資券", diag.margin_score,
@@ -2720,6 +2722,75 @@ else:
                 st.markdown(f"- {ic} **{p.name}** {neck} — {p.note}")
         else:
             st.caption("近期無明顯型態。")
+
+        # === 葛蘭碧八大法則 ===
+        st.markdown("#### 📏 葛蘭碧 (Granville) 八大法則")
+        gv = diag.granville
+        if gv is None:
+            st.caption("無分析資料")
+        else:
+            gc1, gc2, gc3 = st.columns(3)
+            gc1.metric("使用 MA", f"MA{gv.ma_period}")
+            if gv.last_signal:
+                ls = gv.last_signal
+                emoji = "🟢" if ls.side == "buy" else "🔴"
+                gc2.metric("最近訊號",
+                           f"{emoji} #{ls.rule} {ls.name}",
+                           f"強度 {ls.strength}/3")
+                gc3.metric("葛蘭碧分數",
+                           f"{diag.granville_score:+d}",
+                           f"乖離 {ls.deviation_pct:+.2f}%")
+                st.markdown(
+                    f"📍 訊號日期 **{ls.date}** ｜ 收盤 {ls.price:.2f} ｜ "
+                    f"MA {ls.ma_value:.2f} ｜ 斜率 {ls.ma_slope:+.3f}%/日")
+                st.info(f"📝 {ls.note}")
+            else:
+                gc2.metric("最近訊號", "無新訊號")
+                gc3.metric("葛蘭碧分數", f"{diag.granville_score:+d}")
+                st.caption(diag.granville_note)
+
+            # 近 60 根 K 的訊號歷史
+            if gv.history:
+                with st.expander(
+                        f"📜 葛蘭碧訊號歷史（近 {len(gv.history)} 個）",
+                        expanded=False):
+                    rows = [{
+                        "日期": s.date,
+                        "規則": f"#{s.rule} {s.name}",
+                        "方向": "🟢 買" if s.side == "buy" else "🔴 賣",
+                        "收盤": f"{s.price:.2f}",
+                        "MA": f"{s.ma_value:.2f}",
+                        "乖離%": f"{s.deviation_pct:+.2f}",
+                        "強度": "★" * s.strength,
+                    } for s in reversed(gv.history)]
+                    st.dataframe(pd.DataFrame(rows),
+                                 use_container_width=True, hide_index=True)
+
+        # === 波浪理論詳情 ===
+        st.markdown("#### 🌊 波浪理論（Elliott Wave）")
+        wc1, wc2, wc3 = st.columns(3)
+        wc1.metric("當前波位", diag.wave_label or "—",
+                   f"信心 {diag.wave_confidence}")
+        wc2.metric("方向",
+                   {"up": "📈 上升", "down": "📉 下降",
+                    "corrective": "🔄 修正",
+                    "unclear": "❓ 不明"}.get(diag.wave_direction, "—"))
+        wc3.metric("波浪分數", f"{diag.wave_score:+d}")
+        # 波形比例（黃金切割率驗證）
+        w_obj = wave.detect(df)
+        if w_obj.wave_ratios:
+            st.markdown(
+                f"**🌀 子型態**：{w_obj.sub_pattern} ｜ "
+                f"**Fib 比例驗證**："
+                + ("✅ 通過" if w_obj.fib_validated else "⚠️ 不符"))
+            ratio_strs = []
+            for k, v in w_obj.wave_ratios.items():
+                if v is not None:
+                    ratio_strs.append(f"`{k}={v}`")
+            if ratio_strs:
+                st.caption("波長比例：" + " ｜ ".join(ratio_strs))
+        if diag.wave_note:
+            st.caption(f"📝 {diag.wave_note}")
 
     # ---- 🎯 關鍵價位（多目標 + 費波 + 支撐壓力） ----
     with tab_level:

@@ -6,8 +6,8 @@ from types import ModuleType
 
 import pandas as pd
 
-from . import (candlestick, econophysics, fibonacci, institutional,
-               margin, patterns, schools, wave)
+from . import (candlestick, econophysics, fibonacci, granville,
+               institutional, margin, patterns, schools, wave)
 
 
 @dataclass
@@ -45,6 +45,10 @@ class Diagnosis:
     margin_note: str = ""
     margin_score: int = 0
     margin_score_detail: object | None = None  # MarginScore 五維度物件
+    # 葛蘭碧八大法則
+    granville: object | None = None  # GranvilleAnalysis
+    granville_score: int = 0
+    granville_note: str = ""
     wave_label: str = ""
     wave_direction: str = ""
     wave_confidence: str = ""
@@ -158,13 +162,20 @@ def diagnose(df: pd.DataFrame,
     trend = patterns.trendline(df)
     weekly_bull, weekly_note = _weekly_bias(weekly_df, mod)
 
-    # --- 新增資料：波浪 / 法人 / 融資券 / 計量 / 費波納契 ---
+    # --- 新增資料：波浪 / 法人 / 融資券 / 計量 / 費波納契 / 葛蘭碧 ---
     w = wave.detect(df)
     wave_s, wave_s_note = wave.score_adj(df)
     econ_obj = econophysics.compute(df)
     econ_s, econ_note = econophysics.score_adj(df)
     fib_obj = fibonacci.analyze(df)
     fib_s, fib_note = fibonacci.score_adj(df)
+    # 葛蘭碧八大法則（以 20MA 為主）
+    try:
+        gv_obj = granville.analyze(df, ma_period=20)
+        gv_s = gv_obj.score
+        gv_note = gv_obj.note
+    except Exception:
+        gv_obj, gv_s, gv_note = None, 0, ""
     # 一併算好 candle_history 與 multi S/R 供下游重用（僅 detailed 模式）
     if detailed:
         candle_hist = candlestick.scan_history(df, lookback=90)
@@ -252,12 +263,13 @@ def diagnose(df: pd.DataFrame,
         score += wb
     elif weekly_bull is False:
         score -= wb
-    # 新增加權：波浪 / 法人 / 融資券 / 計量 / 費波納契
+    # 新增加權：波浪 / 法人 / 融資券 / 計量 / 費波納契 / 葛蘭碧
     score += int(round(wave_s * weights.get("wave_scale", 1.0)))
     score += int(round(inst_s * weights.get("institutional_scale", 1.0)))
     score += int(round(marg_s * weights.get("margin_scale", 1.0)))
     score += int(round(econ_s * weights.get("econ_scale", 1.0)))
     score += int(round(fib_s * weights.get("fib_scale", 1.0)))
+    score += int(round(gv_s * weights.get("granville_scale", 1.0)))
 
     score = max(-100, min(100, score))
 
@@ -377,6 +389,7 @@ def diagnose(df: pd.DataFrame,
         institutional_score=inst_s,
         margin_info=marg_info, margin_note=marg_note, margin_score=marg_s,
         margin_score_detail=marg_score_obj,
+        granville=gv_obj, granville_score=gv_s, granville_note=gv_note,
         wave_label=w.label, wave_direction=w.direction,
         wave_confidence=w.confidence, wave_note=w.note, wave_score=wave_s,
         econ=econ_obj, econ_score=econ_s, econ_note=econ_note,

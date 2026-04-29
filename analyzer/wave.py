@@ -25,6 +25,10 @@ class Wave:
     confidence: str       # "高" / "中" / "低"
     note: str
     pivots: list[tuple[int, str, float]]   # (index, "H"/"L", price)
+    # 強化版欄位（黃金切割率驗證）
+    wave_ratios: dict | None = None        # 波長比例 {"w3_w1": 1.65, ...}
+    fib_validated: bool = False            # 是否符合 Fibonacci 黃金切割比
+    sub_pattern: str = ""                  # 子型態：Impulse/Zigzag/Flat/Triangle
 
 
 def _find_pivots(prices: np.ndarray, order: int) -> list[tuple[int, str, float]]:
@@ -34,6 +38,80 @@ def _find_pivots(prices: np.ndarray, order: int) -> list[tuple[int, str, float]]
              [(int(i), "L", float(prices[i])) for i in lows]
     pivots.sort(key=lambda x: x[0])
     return pivots
+
+
+# === 黃金切割比例（Elliott 經典） ===
+# 第 3 波長度應 ≥ 第 1 波 × 1.618（最常見），或 1.0/2.618
+# 第 2 波回檔幅度 0.382 ~ 0.618 of 第 1 波
+# 第 4 波回檔幅度 0.236 ~ 0.382 of 第 3 波
+# 第 5 波長度約 = 第 1 波（等長）或 0.618 of (第 1 波 + 第 3 波)
+def _validate_impulse_ratios(seq: list[tuple[int, str, float]]
+                              ) -> tuple[bool, dict, str]:
+    """驗證上升 5 波結構是否符合 Fibonacci 比例.
+
+    seq = [L0, H1, L2, H3, L4, H5]（六個 pivot）
+    回傳 (是否符合, ratios dict, 子型態)
+    """
+    if len(seq) < 6:
+        return False, {}, "Incomplete"
+    L0 = seq[0][2]; H1 = seq[1][2]; L2 = seq[2][2]
+    H3 = seq[3][2]; L4 = seq[4][2]; H5 = seq[5][2]
+    w1 = H1 - L0
+    w2 = H1 - L2
+    w3 = H3 - L2
+    w4 = H3 - L4
+    w5 = H5 - L4
+    if w1 <= 0 or w3 <= 0 or w5 <= 0:
+        return False, {}, "Invalid"
+    ratios = {
+        "w2/w1_retrace": round(w2 / w1, 3) if w1 > 0 else None,
+        "w3/w1": round(w3 / w1, 3),
+        "w4/w3_retrace": round(w4 / w3, 3) if w3 > 0 else None,
+        "w5/w1": round(w5 / w1, 3),
+    }
+    # 經典條件
+    cond_w3 = w3 >= w1 * 1.0           # 第 3 波 ≥ 第 1 波（最低）
+    cond_w3_strong = w3 >= w1 * 1.618  # 強勢第 3 波
+    cond_w2 = 0.3 <= ratios["w2/w1_retrace"] <= 0.7
+    cond_w4 = 0.15 <= ratios["w4/w3_retrace"] <= 0.5
+    cond_w4_no_overlap = L4 > H1       # 第 4 波不可跌入第 1 波區（鐵律）
+
+    n_ok = sum([cond_w3, cond_w2, cond_w4, cond_w4_no_overlap])
+    valid = n_ok >= 3
+    pattern = "Impulse-Strong" if cond_w3_strong and valid \
+        else "Impulse" if valid \
+        else "Impulse-Doubtful"
+    return valid, ratios, pattern
+
+
+def _validate_corrective_abc(seq: list[tuple[int, str, float]]
+                              ) -> tuple[bool, dict, str]:
+    """ABC 修正結構驗證 + Zigzag/Flat/Triangle 分類.
+
+    seq = [Start, A, B, C]（4 個 pivot；上漲後修正：H → L → H → L）
+    """
+    if len(seq) < 4:
+        return False, {}, "Incomplete"
+    P0 = seq[0][2]; A = seq[1][2]; B = seq[2][2]; C = seq[3][2]
+    wa = abs(P0 - A)   # A 波幅度
+    wb = abs(A - B)    # B 波反彈幅度
+    wc = abs(B - C)    # C 波幅度
+    if wa <= 0 or wc <= 0:
+        return False, {}, "Invalid"
+    ratios = {
+        "B/A_retrace": round(wb / wa, 3),
+        "C/A": round(wc / wa, 3),
+    }
+    # Zigzag: B 反彈 < 0.618A，C ≥ A（深修正）
+    if ratios["B/A_retrace"] < 0.618 and ratios["C/A"] >= 1.0:
+        return True, ratios, "Zigzag"
+    # Flat: B 反彈 ≈ A（>= 0.9），C ≈ A
+    if ratios["B/A_retrace"] >= 0.9 and 0.9 <= ratios["C/A"] <= 1.1:
+        return True, ratios, "Flat"
+    # Triangle: 各波收斂（C < A 且 B 介於）
+    if ratios["C/A"] < 0.7 and 0.4 <= ratios["B/A_retrace"] <= 0.9:
+        return True, ratios, "Triangle"
+    return False, ratios, "Irregular"
 
 
 def detect(df: pd.DataFrame, lookback: int = 120) -> Wave:
@@ -56,33 +134,84 @@ def detect(df: pd.DataFrame, lookback: int = 120) -> Wave:
     last_pivot_idx = recent[-1][0]
     bars_since = len(tail) - 1 - last_pivot_idx
 
-    # === 簡化判斷邏輯 ===
-    # 1. 取最後 5 個 pivot 判斷波浪結構
+    # === 強化判斷：6 個 pivot 驗證上升 5 波（含黃金切割率） ===
+    if len(recent) >= 6:
+        seq6 = recent[-6:]
+        types6 = [p[1] for p in seq6]
+        # 上升 5 波 = L H L H L H（起點低、終點高）
+        if types6 == ["L", "H", "L", "H", "L", "H"]:
+            ok, ratios, sub = _validate_impulse_ratios(seq6)
+            conf = "高" if sub == "Impulse-Strong" else "中" if ok else "低"
+            note = (f"完整 5 波結構 [{sub}]"
+                    + (f"，w3/w1={ratios.get('w3/w1')}"
+                       f"，w4 不入 w1 區 ✓" if ok else "，比例不符"))
+            return Wave("已完成上升 5 波（高位風險）", "up", 5, conf,
+                        note, pivots,
+                        wave_ratios=ratios, fib_validated=ok,
+                        sub_pattern=sub)
+        # 下跌 5 波 = H L H L H L
+        if types6 == ["H", "L", "H", "L", "H", "L"]:
+            # 鏡像驗證：把高低互換做 impulse 檢查
+            inv = [(i, "H" if t == "L" else "L", -p) for i, t, p in seq6]
+            ok, ratios, sub = _validate_impulse_ratios(inv)
+            conf = "高" if sub == "Impulse-Strong" else "中" if ok else "低"
+            return Wave("已完成下跌 5 波（低位反彈機會）", "down", 5, conf,
+                        f"完整下跌 5 波 [{sub}]", pivots,
+                        wave_ratios=ratios, fib_validated=ok,
+                        sub_pattern=sub)
+
+    # 1. 取最後 5 個 pivot 判斷未完成 5 波結構
     if len(recent) >= 5:
         seq = recent[-5:]
         types = [p[1] for p in seq]
         prices = [p[2] for p in seq]
 
-        # 上升五波起始於 L：L H L H L（或 H L H L H）最後一段仍上升
-        # 核心：頭頭高、底底高 + 3 波最長（或不最短）
         lhs = all(t in ("H", "L") for t in types)
         if lhs and types[0] == "L" and types[-1] == "L":
-            # L H L H L → 可能結束五波中的第 4 波（尚未漲出第 5 波）
+            # L H L H L → 5 波之 4 波末（尚未漲出 5 波）或 ABC 修正末
             if prices[1] < prices[3] and prices[2] < prices[4] < prices[1]:
-                # 多頭結構：H1<H2, L1<L2<H1
                 if last_price > prices[-1]:
-                    return Wave("第 5 波上漲中", "up", 5, "中",
-                                "進入第 5 波，留意末升段風險", pivots)
+                    # 嘗試驗證 w3/w1 比例
+                    seq_ext = seq + [(len(tail) - 1, "H", last_price)]
+                    ok, ratios, sub = _validate_impulse_ratios(seq_ext)
+                    conf = "中" if ok else "低"
+                    return Wave("第 5 波上漲中", "up", 5, conf,
+                                f"進入第 5 波 [{sub}]，留意末升段風險",
+                                pivots,
+                                wave_ratios=ratios, fib_validated=ok,
+                                sub_pattern=sub)
                 return Wave("第 4 波修正末", "up", 4, "中",
-                            "第 4 波尾聲，可能展開第 5 波", pivots)
+                            "第 4 波尾聲，可能展開第 5 波", pivots,
+                            sub_pattern="Wave-4-end")
         if lhs and types[0] == "H" and types[-1] == "H":
-            # H L H L H → 空頭結構
             if prices[1] > prices[3] and prices[2] > prices[4] > prices[1]:
                 if last_price < prices[-1]:
                     return Wave("下跌第 5 波", "down", 5, "中",
-                                "空頭末跌段，留意反彈", pivots)
+                                "空頭末跌段，留意反彈", pivots,
+                                sub_pattern="Wave-5-down")
 
-    # 2. 最近 3~4 轉折判斷方向
+    # 2. ABC 修正辨識（4 個 pivot：起點 → A → B → C）
+    if len(recent) >= 4:
+        seq4 = recent[-4:]
+        types4 = [p[1] for p in seq4]
+        # 上漲後修正：H L H L
+        if types4 == ["H", "L", "H", "L"]:
+            ok, ratios, sub = _validate_corrective_abc(seq4)
+            if ok:
+                conf = "中"
+                if last_price > seq4[-1][2]:
+                    return Wave(f"ABC 修正末 ({sub})", "corrective", 3, conf,
+                                f"{sub} 修正完成，反彈訊號"
+                                f"（B/A={ratios.get('B/A_retrace')}，"
+                                f"C/A={ratios.get('C/A')}）", pivots,
+                                wave_ratios=ratios, fib_validated=True,
+                                sub_pattern=sub)
+                return Wave(f"ABC 修正進行中 ({sub})", "corrective", 3, conf,
+                            f"修正型態 {sub}，建議觀望", pivots,
+                            wave_ratios=ratios, fib_validated=True,
+                            sub_pattern=sub)
+
+    # 3. 最近 3 轉折判斷方向
     last3 = recent[-3:] if len(recent) >= 3 else recent
     if len(last3) >= 3:
         p0, p1, p2 = last3[-3][2], last3[-2][2], last3[-1][2]
