@@ -174,6 +174,7 @@ def screen_historical(
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
     from . import universe as _u
+    from . import industry as _ind
 
     snap = _u.snapshot()
     if pre_filter_lots_today > 0:
@@ -184,6 +185,17 @@ def screen_historical(
         snap = snap.head(limit)
     codes = snap["Code"].tolist()
     names = dict(zip(snap["Code"], snap["Name"]))
+    # 一次拉產業 map 給 filter 用
+    try:
+        ind_df = _ind.snapshot()
+        if not ind_df.empty:
+            industry_map = dict(zip(
+                ind_df["code"].astype(str),
+                ind_df["industry"].fillna("未分類").astype(str)))
+        else:
+            industry_map = {}
+    except Exception:
+        industry_map = {}
     total = len(codes)
 
     if progress_cb:
@@ -219,16 +231,22 @@ def screen_historical(
         progress_cb(1.0, f"完成：{len(results)} 檔通過篩選")
 
     full_df = pd.DataFrame(results)
+    # 加上產業欄位（給 Lv3 過濾用）
+    if not full_df.empty:
+        full_df["產業"] = full_df["代號"].astype(str).map(
+            industry_map).fillna("未分類")
     if full_df.empty:
         return {"long": full_df, "short": full_df, "full": full_df,
                 "total": total, "passed": 0,
-                "as_of_date": as_of_date}
+                "as_of_date": as_of_date,
+                "industry_map": industry_map}
     long_top = full_df.nlargest(top_n, "分數").reset_index(drop=True)
     short_top = full_df.nsmallest(top_n, "分數").reset_index(drop=True)
     return {
         "long": long_top, "short": short_top, "full": full_df,
         "total": total, "passed": len(full_df),
         "as_of_date": as_of_date,
+        "industry_map": industry_map,
     }
 
 
@@ -310,13 +328,29 @@ def screen(
         except Exception:
             pass
 
+    # 抓產業 map 給 filter 用
+    try:
+        from . import industry as _ind
+        ind_df = _ind.snapshot()
+        industry_map = dict(zip(
+            ind_df["code"].astype(str),
+            ind_df["industry"].fillna("未分類").astype(str))) \
+            if not ind_df.empty else {}
+    except Exception:
+        industry_map = {}
+
     full_df = pd.DataFrame(results)
+    if not full_df.empty:
+        full_df["產業"] = full_df["代號"].astype(str).map(
+            industry_map).fillna("未分類")
     if full_df.empty:
         return {"long": full_df, "short": full_df, "full": full_df,
-                "total": total, "passed": 0}
+                "total": total, "passed": 0,
+                "industry_map": industry_map}
     long_top = full_df.nlargest(top_n, "分數").reset_index(drop=True)
     short_top = full_df.nsmallest(top_n, "分數").reset_index(drop=True)
     return {
         "long": long_top, "short": short_top, "full": full_df,
         "total": total, "passed": len(full_df),
+        "industry_map": industry_map,
     }

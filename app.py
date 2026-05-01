@@ -8,8 +8,8 @@ import streamlit as st
 
 import logging
 
-from analyzer import (chart, data, diagnosis, etf, etf_scraper,
-                      granville, indicators, industry, live,
+from analyzer import (backtest_filter, chart, data, diagnosis, etf,
+                      etf_scraper, granville, indicators, industry, live,
                       margin_history, marketdata, moneyflow, price_cache,
                       realbacktest, revenue, schools, screener,
                       shareholders, storage, targets, wave, watchlist)
@@ -1775,35 +1775,91 @@ elif mode == "📋 實盤回測":
         new_hold_days = st.number_input("持有天數", 1, 60, 5)
         new_note = st.text_input("備註",
                                   value=f"{date.today().isoformat()} 實盤")
+        use_filter = st.checkbox(
+            "啟用 5 層智慧過濾", value=True,
+            help="Lv1 大盤 regime ｜ Lv2 分數門檻 ≥70/≤-70 ｜ "
+                 "Lv3 同產業 ≤2 檔 ｜ Lv4 動態持有期 ｜ Lv5 訊號構成"
+        )
         if st.button("🚀 跑當前選股 + 鎖定", use_container_width=True,
                      type="primary"):
             with st.spinner("掃描中（首次約 1-3 分鐘）…"):
                 res = screener.screen(
                     min_avg_volume_lots=1000,
-                    top_n=int(new_top_n),
+                    top_n=max(int(new_top_n) * 3, 15),  # 多取 3x 給過濾器選
                     pre_filter_lots_today=200,
                 )
             if res["passed"] == 0:
                 st.error("掃描無通過篩選的股票")
             else:
-                long_picks = res["long"].head(new_top_n).to_dict("records")
-                short_picks = res["short"].head(new_top_n).to_dict("records")
+                ind_map = res.get("industry_map", {})
+                long_raw = res["long"].to_dict("records")
+                short_raw = res["short"].to_dict("records")
+
+                if use_filter:
+                    rep_l = backtest_filter.apply_all_filters(
+                        "long", long_raw, industry_map=ind_map)
+                    rep_s = backtest_filter.apply_all_filters(
+                        "short", short_raw, industry_map=ind_map)
+                    # 顯示 regime + 過濾結果
+                    st.info(f"📊 大盤 regime: **{rep_l.regime.label_zh}**\n\n"
+                            f"{rep_l.regime.note}")
+                    long_picks = rep_l.picks_filtered[:int(new_top_n)]
+                    short_picks = rep_s.picks_filtered[:int(new_top_n)]
+                    eff_capital_l = (new_capital * rep_l.capital_scale
+                                     if rep_l.proceed else 0)
+                    eff_capital_s = (new_capital * rep_s.capital_scale
+                                     if rep_s.proceed else 0)
+                    eff_hold = rep_l.hold_days if rep_l.proceed \
+                        else rep_s.hold_days if rep_s.proceed \
+                        else int(new_hold_days)
+                    if not rep_l.proceed:
+                        st.warning(f"🚫 多單：{rep_l.skip_reason}")
+                    if not rep_s.proceed:
+                        st.warning(f"🚫 空單：{rep_s.skip_reason}")
+                    if rep_l.filter_result.rejected:
+                        with st.expander(
+                                f"📋 多單剔除 {len(rep_l.filter_result.rejected)} 檔",
+                                expanded=False):
+                            for p, why in rep_l.filter_result.rejected:
+                                st.caption(f"❌ {p['代號']} {p['名稱']}：{why}")
+                    if rep_s.filter_result.rejected:
+                        with st.expander(
+                                f"📋 空單剔除 {len(rep_s.filter_result.rejected)} 檔",
+                                expanded=False):
+                            for p, why in rep_s.filter_result.rejected:
+                                st.caption(f"❌ {p['代號']} {p['名稱']}：{why}")
+                else:
+                    long_picks = long_raw[:int(new_top_n)]
+                    short_picks = short_raw[:int(new_top_n)]
+                    eff_capital_l = new_capital
+                    eff_capital_s = new_capital
+                    eff_hold = int(new_hold_days)
+
+                sid_l = sid_s = None
                 try:
-                    sid_l = realbacktest.lock_session(
-                        "long", long_picks, capital=new_capital,
-                        hold_days=int(new_hold_days), note=new_note)
-                    sid_s = realbacktest.lock_session(
-                        "short", short_picks, capital=new_capital,
-                        hold_days=int(new_hold_days), note=new_note)
-                    st.success(f"✅ 已鎖定 long#{sid_l} + short#{sid_s}")
-                    # 自動備份至 GitHub（雲端持久化）
-                    if storage.is_configured():
-                        try:
-                            realbacktest.backup_now(
-                                message=f"lock long#{sid_l} short#{sid_s}")
-                        except Exception:
-                            pass
-                    st.rerun()
+                    if long_picks and eff_capital_l > 0:
+                        sid_l = realbacktest.lock_session(
+                            "long", long_picks, capital=eff_capital_l,
+                            hold_days=eff_hold, note=new_note)
+                    if short_picks and eff_capital_s > 0:
+                        sid_s = realbacktest.lock_session(
+                            "short", short_picks, capital=eff_capital_s,
+                            hold_days=eff_hold, note=new_note)
+                    msgs = []
+                    if sid_l: msgs.append(f"long#{sid_l} ({len(long_picks)} 檔)")
+                    if sid_s: msgs.append(f"short#{sid_s} ({len(short_picks)} 檔)")
+                    if msgs:
+                        st.success(f"✅ 已鎖定 {' + '.join(msgs)} ｜ "
+                                   f"持有 {eff_hold} 日")
+                        if storage.is_configured():
+                            try:
+                                realbacktest.backup_now(
+                                    message=f"lock {','.join(msgs)}")
+                            except Exception:
+                                pass
+                        st.rerun()
+                    else:
+                        st.error("❌ 無任何符合條件的部位（regime + filter 全部過濾掉）")
                 except ValueError as e:
                     st.warning(f"⚠️ {e}")
 
@@ -1832,6 +1888,10 @@ elif mode == "📋 實盤回測":
             "備註", value=f"{h_date.isoformat()} 歷史測試",
             key="h_note",
         )
+        h_use_filter = st.checkbox(
+            "啟用 5 層智慧過濾", value=True, key="h_use_filter",
+            help="Lv1 regime（以該歷史日期當下大盤狀態為準）+ Lv2~5",
+        )
         if st.button("🔍 跑歷史回測", use_container_width=True,
                      key="h_run", type="primary"):
             as_of = h_date.isoformat()
@@ -1844,7 +1904,7 @@ elif mode == "📋 實盤回測":
                     res_h = screener.screen_historical(
                         as_of_date=as_of,
                         min_avg_volume_lots=1000,
-                        top_n=int(h_top_n),
+                        top_n=max(int(h_top_n) * 3, 15),
                         pre_filter_lots_today=200,
                         progress_cb=_h_cb,
                     )
@@ -1852,25 +1912,69 @@ elif mode == "📋 實盤回測":
                 if res_h["passed"] == 0:
                     st.error("該日期無通過篩選的股票（可能 cache 沒覆蓋此日）")
                 else:
-                    long_h = res_h["long"].head(h_top_n).to_dict("records")
-                    short_h = res_h["short"].head(h_top_n).to_dict("records")
+                    ind_map_h = res_h.get("industry_map", {})
+                    long_raw_h = res_h["long"].to_dict("records")
+                    short_raw_h = res_h["short"].to_dict("records")
+
+                    if h_use_filter:
+                        rep_lh = backtest_filter.apply_all_filters(
+                            "long", long_raw_h, industry_map=ind_map_h,
+                            as_of_date=as_of)
+                        rep_sh = backtest_filter.apply_all_filters(
+                            "short", short_raw_h, industry_map=ind_map_h,
+                            as_of_date=as_of)
+                        st.info(
+                            f"📊 {as_of} 大盤 regime: "
+                            f"**{rep_lh.regime.label_zh}**\n\n"
+                            f"{rep_lh.regime.note}")
+                        long_h = rep_lh.picks_filtered[:int(h_top_n)]
+                        short_h = rep_sh.picks_filtered[:int(h_top_n)]
+                        eff_cap_l = (h_capital * rep_lh.capital_scale
+                                     if rep_lh.proceed else 0)
+                        eff_cap_s = (h_capital * rep_sh.capital_scale
+                                     if rep_sh.proceed else 0)
+                        eff_hold_h = rep_lh.hold_days if rep_lh.proceed \
+                            else rep_sh.hold_days if rep_sh.proceed \
+                            else int(h_hold)
+                        if not rep_lh.proceed:
+                            st.warning(f"🚫 多單：{rep_lh.skip_reason}")
+                        if not rep_sh.proceed:
+                            st.warning(f"🚫 空單：{rep_sh.skip_reason}")
+                    else:
+                        long_h = long_raw_h[:int(h_top_n)]
+                        short_h = short_raw_h[:int(h_top_n)]
+                        eff_cap_l = h_capital
+                        eff_cap_s = h_capital
+                        eff_hold_h = int(h_hold)
+
+                    sid_lh = sid_sh = None
                     try:
-                        sid_lh = realbacktest.lock_session_historical(
-                            "long", as_of, long_h, capital=h_capital,
-                            hold_days=int(h_hold), note=h_note)
-                        sid_sh = realbacktest.lock_session_historical(
-                            "short", as_of, short_h, capital=h_capital,
-                            hold_days=int(h_hold), note=h_note)
-                        st.success(
-                            f"✅ 歷史回測 sessions 已建立："
-                            f"long#{sid_lh} + short#{sid_sh}")
-                        if storage.is_configured():
-                            try:
-                                realbacktest.backup_now(
-                                    message=f"historical lock {as_of}")
-                            except Exception:
-                                pass
-                        st.rerun()
+                        if long_h and eff_cap_l > 0:
+                            sid_lh = realbacktest.lock_session_historical(
+                                "long", as_of, long_h, capital=eff_cap_l,
+                                hold_days=eff_hold_h, note=h_note)
+                        if short_h and eff_cap_s > 0:
+                            sid_sh = realbacktest.lock_session_historical(
+                                "short", as_of, short_h, capital=eff_cap_s,
+                                hold_days=eff_hold_h, note=h_note)
+                        msgs = []
+                        if sid_lh: msgs.append(
+                            f"long#{sid_lh} ({len(long_h)} 檔)")
+                        if sid_sh: msgs.append(
+                            f"short#{sid_sh} ({len(short_h)} 檔)")
+                        if msgs:
+                            st.success(
+                                f"✅ 歷史回測：{' + '.join(msgs)} ｜ "
+                                f"持有 {eff_hold_h} 日")
+                            if storage.is_configured():
+                                try:
+                                    realbacktest.backup_now(
+                                        message=f"historical lock {as_of}")
+                                except Exception:
+                                    pass
+                            st.rerun()
+                        else:
+                            st.error("❌ 無任何符合條件的部位")
                     except ValueError as e:
                         st.warning(f"⚠️ {e}")
             except Exception as e:
@@ -1883,6 +1987,41 @@ elif mode == "📋 實盤回測":
         st.info("尚未鎖定任何回測 session。請從左側「➕ 新建回測 session」開始，"
                 "或先去「🎯 今日選股」確認當前推薦。")
         st.stop()
+
+    # 大盤 regime 顯示 + 技術停損按鈕
+    cur_regime = backtest_filter.detect_regime()
+    rg_c1, rg_c2 = st.columns([3, 1])
+    with rg_c1:
+        st.markdown(
+            f"### 📊 當前大盤 regime：{cur_regime.label_zh}　"
+            f"<span style='color:#888; font-size:14px;'>"
+            f"{cur_regime.note}</span>",
+            unsafe_allow_html=True,
+        )
+    with rg_c2:
+        if st.button("⚙️ 掃描 MA10 技術停損",
+                     use_container_width=True,
+                     help="掃描所有 open sessions：多單跌破 MA10 / "
+                          "空單突破 MA10 → 強制結算該檔（Lv4）"):
+            with st.spinner("掃描中…"):
+                triggered = realbacktest.check_stop_loss_open_sessions()
+            if not triggered:
+                st.info("🟢 無持股觸發 MA10 技術停損")
+            else:
+                total_n = sum(len(v) for v in triggered.values())
+                st.warning(f"⚠️ {total_n} 檔觸發停損：")
+                for sid, items in triggered.items():
+                    for code, name, side, reason, exit_p in items:
+                        emoji = "🛑" if side == "long" else "↩️"
+                        st.markdown(
+                            f"{emoji} **session#{sid} {code} {name}**"
+                            f" @ {exit_p:.2f} — {reason}")
+                if storage.is_configured():
+                    try:
+                        realbacktest.backup_now(message="MA10 stop-loss")
+                    except Exception:
+                        pass
+                st.rerun()
 
     # 統計卡片
     open_sessions = [s for s in sessions if s.status == "open"]

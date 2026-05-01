@@ -21,7 +21,7 @@ from typing import Literal
 
 import pandas as pd
 
-from . import live, price_cache
+from . import live, price_cache, backtest_filter
 
 DB_PATH = Path(__file__).parent.parent / "data" / "realbacktest.db"
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -241,6 +241,46 @@ def lock_session(side: Literal["long", "short"],
                  entry_price, per_stock),
             )
     return sid
+
+
+def check_stop_loss_open_sessions() -> dict:
+    """掃描所有 open sessions 的持股，觸發 MA10 技術停損.
+
+    Lv4 自動執行：
+      - 多單跌破 MA10 → 立即結算該檔（保留其他持股）
+      - 空單突破 MA10 → 立即回補
+
+    回傳 {session_id: [(code, side, reason, exit_price), ...]}
+    """
+    from . import indicators
+    sessions = list_sessions(status="open")
+    triggered: dict = {}
+    today = date.today().isoformat()
+    for sess in sessions:
+        holdings = list_holdings(sess.id)
+        for h in holdings:
+            if h.exit_price is not None:
+                continue
+            try:
+                df = price_cache._load(h.code)
+                if df is None or df.empty:
+                    continue
+                df = indicators.add_all(df)
+                stop, reason = backtest_filter.check_technical_stop(
+                    df, sess.side, h.entry_price)
+                if stop:
+                    cur_price = float(df["close"].iloc[-1])
+                    with _lock, _conn() as c:
+                        c.execute(
+                            "UPDATE realbt_holding SET exit_date=?, "
+                            "exit_price=? WHERE session_id=? AND code=?",
+                            (today, cur_price, sess.id, h.code),
+                        )
+                    triggered.setdefault(sess.id, []).append(
+                        (h.code, h.name, sess.side, reason, cur_price))
+            except Exception:
+                continue
+    return triggered
 
 
 def lock_session_historical(side: Literal["long", "short"],
