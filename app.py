@@ -8,11 +8,12 @@ import streamlit as st
 
 import logging
 
-from analyzer import (backtest_filter, chart, data, diagnosis, etf,
-                      etf_scraper, granville, indicators, industry, live,
-                      margin_history, marketdata, moneyflow, price_cache,
-                      realbacktest, revenue, schools, screener,
-                      shareholders, storage, targets, wave, watchlist)
+from analyzer import (backtest_filter, broker, broker_history, chart,
+                      data, diagnosis, etf, etf_scraper, granville,
+                      indicators, industry, live, margin_history,
+                      marketdata, moneyflow, price_cache, realbacktest,
+                      revenue, schools, screener, shareholders, storage,
+                      targets, wave, watchlist)
 
 logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 
@@ -233,6 +234,21 @@ def cached_revenue(code: str, _day: str):
 def cached_shareholders(code: str, _day: str):
     try:
         return shareholders.for_code(code)
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def cached_broker_today(code: str, _day: str):
+    """histock 券商分點當日資料；同時 append 到 broker_history 累積."""
+    try:
+        snap = broker.fetch(code)
+        if snap is not None:
+            try:
+                broker_history.append_today(snap)
+            except Exception:
+                pass
+        return snap
     except Exception:
         return None
 
@@ -529,6 +545,12 @@ if "_ohlcv_restored" not in st.session_state:
             ok, msg = watchlist.auto_restore()
             if ok:
                 st.toast(f"☁️ 收藏清單已還原：{msg}", icon="✅")
+        except Exception:
+            pass
+        try:
+            ok, msg = broker_history.auto_restore()
+            if ok:
+                st.toast(f"☁️ 券商分點歷史已還原：{msg}", icon="✅")
         except Exception:
             pass
 # 處理上一輪 rerun 設定的模式切換意圖（必須在 widget 渲染前）
@@ -3319,6 +3341,149 @@ else:
                                 config={"displayModeBar": False})
             else:
                 st.caption("💡 每次查詢會累積一筆快照，多查幾次後自動呈現歷史趨勢。")
+
+            # === 集保戶數每週變化 ===
+            wk_chg = shareholders.weekly_change(code)
+            if wk_chg:
+                st.markdown("##### 📅 集保戶數每週變化（TDCC 每週五公布）")
+                wc = st.columns(4)
+                wc[0].metric(
+                    "股東總數",
+                    f"{wk_chg['this_week']['total_holders']:,}",
+                    f"{wk_chg['delta_holders']:+,} "
+                    f"({wk_chg['delta_holders_pct']:+.2f}%)",
+                    delta_color="inverse",  # 增加=紅(籌碼分散)，減少=綠(集中)
+                )
+                wc[1].metric(
+                    "千張大戶 %",
+                    f"{wk_chg['this_week']['kilo_pct']:.2f}%",
+                    f"{wk_chg['delta_kilo_pct']:+.2f}p",
+                )
+                wc[2].metric(
+                    "大戶 %",
+                    f"{wk_chg['this_week']['big_pct']:.2f}%",
+                    f"{wk_chg['delta_big_pct']:+.2f}p",
+                )
+                wc[3].metric(
+                    "散戶 %",
+                    f"{wk_chg['this_week']['retail_pct']:.2f}%",
+                    f"{wk_chg['delta_retail_pct']:+.2f}p",
+                    delta_color="inverse",
+                )
+                st.caption(
+                    f"📝 **判讀**：{wk_chg['interpretation']}　"
+                    f"｜ 比較期間 {wk_chg['last_week']['date']} → "
+                    f"{wk_chg['this_week']['date']}"
+                )
+
+        # === 🏢 券商分點買賣超 ===
+        st.markdown("#### 🏢 券商分點買賣超（histock.tw, 每日更新）")
+        bk_snap = cached_broker_today(code, _today_key())
+        if bk_snap is None:
+            st.info("無券商分點資料")
+        else:
+            cur_close = float(df["close"].iloc[-1]) \
+                if len(df) > 0 else 0.0
+            st.caption(
+                f"📅 資料日期 **{bk_snap.date}** ｜ "
+                f"當日收盤 **{cur_close:.2f}** "
+                f"（均價差以此為基準）"
+            )
+
+            # 今日買超 / 賣超 top 5 雙欄
+            bk_c1, bk_c2 = st.columns(2)
+            with bk_c1:
+                st.markdown("**🟢 買超 Top 5**")
+                top5_buy = bk_snap.top_buy[:5]
+                for i, e in enumerate(top5_buy, 1):
+                    diff_pct = ((cur_close / e.avg_price - 1) * 100
+                                if e.avg_price > 0 else 0)
+                    diff_color = ("🔴" if diff_pct < 0 else "🟢"
+                                  if diff_pct > 0 else "⚪")
+                    st.markdown(
+                        f"{i}. **{e.broker}** "
+                        f"+{e.net_lots:,} 張　"
+                        f"<span style='color:#888;font-size:12px;'>"
+                        f"均價 {e.avg_price:.2f} ｜ 現價差 "
+                        f"{diff_color} {diff_pct:+.2f}%</span>",
+                        unsafe_allow_html=True,
+                    )
+            with bk_c2:
+                st.markdown("**🔴 賣超 Top 5**")
+                top5_sell = bk_snap.top_sell[:5]
+                for i, e in enumerate(top5_sell, 1):
+                    diff_pct = ((cur_close / e.avg_price - 1) * 100
+                                if e.avg_price > 0 else 0)
+                    diff_color = ("🔴" if diff_pct < 0 else "🟢"
+                                  if diff_pct > 0 else "⚪")
+                    st.markdown(
+                        f"{i}. **{e.broker}** "
+                        f"{e.net_lots:,} 張　"
+                        f"<span style='color:#888;font-size:12px;'>"
+                        f"均價 {e.avg_price:.2f} ｜ 現價差 "
+                        f"{diff_color} {diff_pct:+.2f}%</span>",
+                        unsafe_allow_html=True,
+                    )
+
+            # 連續 N 日買超偵測
+            try:
+                streak = broker_history.consecutive_buy(
+                    code, n=3, min_lots=100)
+            except Exception:
+                streak = []
+            if streak:
+                st.markdown("##### 🔥 連續 3 日買超的券商")
+                cols = st.columns(min(len(streak), 4))
+                for i, s in enumerate(streak[:4]):
+                    diff_pct = ((cur_close / s["avg_price"] - 1) * 100
+                                if s["avg_price"] > 0 else 0)
+                    cols[i].metric(
+                        f"🔴 {s['broker']}",
+                        f"+{s['total_net_lots']:,} 張",
+                        f"3日均成本 {s['avg_price']:.2f}　"
+                        f"現價差 {diff_pct:+.2f}%",
+                    )
+                if len(streak) > 4:
+                    st.caption(
+                        f"...另外還有 {len(streak)-4} 個連續買超券商")
+            else:
+                st.caption(
+                    "💡 連續 3 日買超偵測：尚未累積足夠歷史"
+                    "（每天查詢會自動累積，3 個交易日後啟用）。"
+                )
+
+            # 本週累積買超 top 5（5 日視窗）
+            try:
+                wk_top = broker_history.weekly_top_brokers(code, days=5)
+            except Exception:
+                wk_top = {"top_buy": [], "top_sell": []}
+            if wk_top["top_buy"] or wk_top["top_sell"]:
+                with st.expander(
+                        "📈 本週累積（近 5 個交易日）買賣超 Top 5",
+                        expanded=False):
+                    wkc1, wkc2 = st.columns(2)
+                    with wkc1:
+                        st.markdown("**🟢 買超**")
+                        for s in wk_top["top_buy"]:
+                            diff = ((cur_close / s["avg_price"] - 1)*100
+                                    if s["avg_price"] > 0 else 0)
+                            st.markdown(
+                                f"- **{s['broker']}** "
+                                f"+{s['total_net']:,} 張 "
+                                f"({s['days_appeared']} 日上榜)　"
+                                f"均成本 {s['avg_price']:.2f}　"
+                                f"差 {diff:+.2f}%")
+                    with wkc2:
+                        st.markdown("**🔴 賣超**")
+                        for s in wk_top["top_sell"]:
+                            diff = ((cur_close / s["avg_price"] - 1)*100
+                                    if s["avg_price"] > 0 else 0)
+                            st.markdown(
+                                f"- **{s['broker']}** "
+                                f"{s['total_net']:,} 張 "
+                                f"({s['days_appeared']} 日上榜)　"
+                                f"均成本 {s['avg_price']:.2f}　"
+                                f"差 {diff:+.2f}%")
 
         st.markdown("#### 🎯 主動式 ETF 持股")
         holders = etf.holders_of(code)

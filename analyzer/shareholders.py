@@ -168,3 +168,75 @@ def history(code: str) -> pd.DataFrame:
             c, params=(str(code).strip(),),
         )
     return df
+
+
+def weekly_change(code: str) -> dict | None:
+    """計算最新一筆 vs 前一筆的週變化（TDCC 每週公布一次）.
+
+    回傳 {
+        'this_week': {date, total_holders, kilo_pct, big_pct, mid_pct, retail_pct},
+        'last_week': 同上,
+        'delta_holders':  this - last (人),
+        'delta_holders_pct': %,
+        'delta_kilo_pct':  this - last (大戶持股 %p 變化),
+        'delta_retail_pct': this - last (散戶 %p 變化),
+        'interpretation': 中文判讀
+    } 或 None（資料不足）
+    """
+    h = history(code)
+    if h is None or len(h) < 2:
+        return None
+    h = h.sort_values("date").reset_index(drop=True)
+    last = h.iloc[-1]
+    prev = h.iloc[-2]
+
+    delta_holders = int(last["total_holders"]) - int(prev["total_holders"])
+    delta_holders_pct = (delta_holders / int(prev["total_holders"]) * 100
+                         if prev["total_holders"] else 0.0)
+    delta_kilo = float(last["kilo_pct"]) - float(prev["kilo_pct"])
+    delta_big = float(last["big_pct"]) - float(prev["big_pct"])
+    delta_mid = float(last["mid_pct"]) - float(prev["mid_pct"])
+    delta_retail = float(last["retail_pct"]) - float(prev["retail_pct"])
+
+    # 判讀邏輯
+    notes = []
+    if delta_holders_pct < -0.5:
+        notes.append(f"股東總數減少 {abs(delta_holders):,} 人（{delta_holders_pct:+.2f}%），籌碼集中")
+    elif delta_holders_pct > 0.5:
+        notes.append(f"股東總數增加 {delta_holders:,} 人（{delta_holders_pct:+.2f}%），籌碼分散")
+    if delta_kilo > 0.3:
+        notes.append(f"千張大戶 {delta_kilo:+.2f}%p（增持）")
+    elif delta_kilo < -0.3:
+        notes.append(f"千張大戶 {delta_kilo:+.2f}%p（減持）")
+    if delta_retail > 0.3:
+        notes.append(f"散戶 {delta_retail:+.2f}%p（湧入）")
+    elif delta_retail < -0.3:
+        notes.append(f"散戶 {delta_retail:+.2f}%p（離場）")
+
+    interp = "； ".join(notes) if notes else "本週變化不顯著"
+
+    return {
+        "this_week": {
+            "date": str(last["date"]),
+            "total_holders": int(last["total_holders"]),
+            "kilo_pct": float(last["kilo_pct"]),
+            "big_pct": float(last["big_pct"]),
+            "mid_pct": float(last["mid_pct"]),
+            "retail_pct": float(last["retail_pct"]),
+        },
+        "last_week": {
+            "date": str(prev["date"]),
+            "total_holders": int(prev["total_holders"]),
+            "kilo_pct": float(prev["kilo_pct"]),
+            "big_pct": float(prev["big_pct"]),
+            "mid_pct": float(prev["mid_pct"]),
+            "retail_pct": float(prev["retail_pct"]),
+        },
+        "delta_holders": delta_holders,
+        "delta_holders_pct": round(delta_holders_pct, 2),
+        "delta_kilo_pct": round(delta_kilo, 3),
+        "delta_big_pct": round(delta_big, 3),
+        "delta_mid_pct": round(delta_mid, 3),
+        "delta_retail_pct": round(delta_retail, 3),
+        "interpretation": interp,
+    }
