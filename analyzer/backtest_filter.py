@@ -56,10 +56,9 @@ def detect_regime(as_of_date: str | None = None) -> MarketRegime:
         end = date.fromisoformat(as_of_date) if as_of_date \
             else date.today()
         start = (end.replace(year=end.year - 1)).isoformat()
-        twii = yf.Ticker("^TWII").history(
-            start=start, end=(end.toordinal() + 2 and
-                              date.fromordinal(end.toordinal() + 2)
-                              .isoformat()))
+        # yfinance.history 的 end 是 exclusive，加 1 天緩衝確保包含 end 當天
+        end_plus = date.fromordinal(end.toordinal() + 1).isoformat()
+        twii = yf.Ticker("^TWII").history(start=start, end=end_plus)
         if twii.empty:
             return MarketRegime(
                 "sideways", "整理（無資料）",

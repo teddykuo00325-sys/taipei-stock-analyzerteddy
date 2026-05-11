@@ -238,6 +238,18 @@ def cached_shareholders(code: str, _day: str):
         return None
 
 
+@st.cache_data(ttl=60, show_spinner=False)
+def cached_session_summary(session_id: int, _minute_key: int):
+    """session_summary 快取 60 秒 — Streamlit rerun 時不重打 live.quotes.
+
+    _minute_key 用 int(time.time() // 60) 保證每分鐘自然失效。
+    """
+    try:
+        return realbacktest.session_summary(session_id)
+    except Exception:
+        return {}
+
+
 @st.cache_data(ttl=1800, show_spinner=False)
 def cached_broker_today(code: str, _day: str):
     """histock 券商分點當日資料；同時 append 到 broker_history 累積."""
@@ -2056,8 +2068,10 @@ elif mode == "📋 實盤回測":
 
     st.divider()
 
+    import time as _time
+    _minute_key = int(_time.time() // 60)
     for sess in sessions:
-        summary = realbacktest.session_summary(sess.id)
+        summary = cached_session_summary(sess.id, _minute_key)
         if not summary:
             continue
         df = summary["holdings_df"]

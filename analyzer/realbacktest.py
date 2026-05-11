@@ -107,6 +107,7 @@ class Holding:
 
         - target_exit_date 為 None / 未來 → 回最新收盤
         - target_exit_date 已過期 → 回該日（或之前最近交易日）的收盤
+        - 防衛：cutoff 早於 entry_date 時回 current_price（避免回未來的負時點價）
         """
         if target_exit_date is None:
             return self.current_price()
@@ -115,6 +116,13 @@ class Holding:
         except Exception:
             return self.current_price()
         cutoff = min(target_dt, date.today())
+        # 防衛：cutoff 比進場日還早（時鐘異常 / 手動建立的怪資料）→ 回現價
+        try:
+            entry_dt = date.fromisoformat(self.entry_date)
+            if cutoff < entry_dt:
+                return self.current_price()
+        except Exception:
+            pass
         try:
             df = price_cache._load(self.code)
             if df.empty:
