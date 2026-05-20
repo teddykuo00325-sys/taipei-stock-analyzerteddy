@@ -531,6 +531,30 @@ st.sidebar.markdown(
 if "app_mode" not in st.session_state:
     st.session_state.app_mode = "🎯 今日選股"
 
+# === 啟動時平行預熱資料源（首次 session 啟動才跑）===
+# 4 個 sidebar/header 用的網路資料源，串行 ~19 秒，平行 ~3.5 秒
+if "_data_warmed" not in st.session_state:
+    st.session_state._data_warmed = True
+    from concurrent.futures import ThreadPoolExecutor as _Tpe
+    def _warm():
+        try: marketdata.fetch_international()
+        except Exception: pass
+    def _warm_idx():
+        try: marketdata.fetch_indices()
+        except Exception: pass
+    def _warm_ind():
+        try: industry.snapshot()
+        except Exception: pass
+    def _warm_uni():
+        try:
+            from analyzer import universe as _uv
+            _uv.snapshot()
+        except Exception: pass
+    with _Tpe(max_workers=4) as _ex:
+        for _fn in (_warm, _warm_idx, _warm_ind, _warm_uni):
+            _ex.submit(_fn)
+    # ThreadPoolExecutor context 結束會等所有 future 完成
+
 # === 啟動時自動從 GitHub 還原 K 線快取 + 實盤回測 DB ===
 if "_ohlcv_restored" not in st.session_state:
     st.session_state._ohlcv_restored = True

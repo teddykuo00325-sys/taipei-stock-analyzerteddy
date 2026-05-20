@@ -47,11 +47,27 @@ REGIME_BULL_GAP = 3.0           # MA20 > MA60 × 1.03 為強多頭
 REGIME_BEAR_GAP = -3.0          # MA20 < MA60 × 0.97 為強空頭
 
 
+_regime_cache: dict = {}  # key=as_of_date or '' → {"t":ts, "v":MarketRegime}
+_REGIME_TTL = 1800  # 30 分鐘
+
+
 def detect_regime(as_of_date: str | None = None) -> MarketRegime:
     """偵測加權指數 regime.
 
     as_of_date='YYYY-MM-DD' 可指定歷史日期；None 為今天。
+    30 分鐘 in-memory cache（每次 Streamlit rerun 都會打網路太貴）。
     """
+    from time import time as _t
+    cache_key = as_of_date or ""
+    now = _t()
+    cached = _regime_cache.get(cache_key)
+    if cached and now - cached["t"] < _REGIME_TTL:
+        return cached["v"]
+
+    def _ret(r: "MarketRegime") -> "MarketRegime":
+        _regime_cache[cache_key] = {"t": now, "v": r}
+        return r
+
     try:
         end = date.fromisoformat(as_of_date) if as_of_date \
             else date.today()
@@ -60,50 +76,50 @@ def detect_regime(as_of_date: str | None = None) -> MarketRegime:
         end_plus = date.fromordinal(end.toordinal() + 1).isoformat()
         twii = yf.Ticker("^TWII").history(start=start, end=end_plus)
         if twii.empty:
-            return MarketRegime(
+            return _ret(MarketRegime(
                 "sideways", "整理（無資料）",
                 0, 0, 0, 0, True, True, 1.0,
-                "加權指數抓取失敗，預設整理")
+                "加權指數抓取失敗，預設整理"))
         twii["MA20"] = twii["Close"].rolling(20).mean()
         twii["MA60"] = twii["Close"].rolling(60).mean()
         # 取 as_of_date 之前最後一根
         if as_of_date:
             twii = twii[twii.index.date <= end]
         if twii.empty or pd.isna(twii["MA60"].iloc[-1]):
-            return MarketRegime(
+            return _ret(MarketRegime(
                 "sideways", "整理（資料不足）",
                 0, 0, 0, 0, True, True, 1.0,
-                "MA60 未成形")
+                "MA60 未成形"))
         last = twii.iloc[-1]
         close = float(last["Close"])
         ma20 = float(last["MA20"])
         ma60 = float(last["MA60"])
         gap = (ma20 / ma60 - 1) * 100
         if gap >= REGIME_BULL_GAP and close >= ma20:
-            return MarketRegime(
+            return _ret(MarketRegime(
                 "bull", "🔴 強多頭",
                 close, ma20, ma60, gap,
                 allow_long=True, allow_short=False, capital_scale=1.0,
                 note=f"MA20 ({ma20:.0f}) > MA60 ({ma60:.0f}) "
-                     f"+{gap:.1f}%，禁開空單")
+                     f"+{gap:.1f}%，禁開空單"))
         if gap <= REGIME_BEAR_GAP and close <= ma20:
-            return MarketRegime(
+            return _ret(MarketRegime(
                 "bear", "🟢 強空頭",
                 close, ma20, ma60, gap,
                 allow_long=False, allow_short=True, capital_scale=1.0,
                 note=f"MA20 ({ma20:.0f}) < MA60 ({ma60:.0f}) "
-                     f"{gap:.1f}%，禁開多單")
-        return MarketRegime(
+                     f"{gap:.1f}%，禁開多單"))
+        return _ret(MarketRegime(
             "sideways", "⚪ 整理",
             close, ma20, ma60, gap,
             allow_long=True, allow_short=True, capital_scale=0.5,
             note=f"MA20-MA60 差距 {gap:+.1f}% 在 ±3% 內，"
-                 f"雙向開倉但資金縮減 50%")
+                 f"雙向開倉但資金縮減 50%"))
     except Exception as e:
-        return MarketRegime(
+        return _ret(MarketRegime(
             "sideways", "整理（例外）",
             0, 0, 0, 0, True, True, 1.0,
-            f"regime 偵測例外：{str(e)[:60]}")
+            f"regime 偵測例外：{str(e)[:60]}"))
 
 
 # ============================================================
