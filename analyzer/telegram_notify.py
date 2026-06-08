@@ -18,7 +18,18 @@ import requests
 
 
 def _cfg() -> dict | None:
-    """讀取 Streamlit secrets；未設定回 None."""
+    """讀取 Telegram credentials.
+
+    優先順序：
+      1. 環境變數 TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID （給 GitHub
+         Actions / cron 等無 Streamlit context 的環境用）
+      2. Streamlit secrets [telegram] block
+    """
+    import os
+    env_token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    env_chat = os.environ.get("TELEGRAM_CHAT_ID")
+    if env_token and env_chat:
+        return {"token": env_token, "chat_id": str(env_chat)}
     try:
         import streamlit as st
         if "telegram" not in st.secrets:
