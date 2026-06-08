@@ -9,11 +9,12 @@ import streamlit as st
 import logging
 
 from analyzer import (backtest_filter, broker, broker_history, chart,
-                      data, diagnosis, etf, etf_scraper, granville,
-                      indicators, industry, live, margin_history,
-                      marketdata, moneyflow, price_cache, realbacktest,
-                      revenue, schools, screener, shareholders, storage,
-                      targets, wave, watchlist)
+                      daily_report, data, diagnosis, etf, etf_scraper,
+                      granville, indicators, industry, live,
+                      margin_history, marketdata, moneyflow, price_cache,
+                      realbacktest, revenue, schools, screener,
+                      shareholders, storage, targets, telegram_notify,
+                      wave, watchlist)
 
 logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 
@@ -589,6 +590,56 @@ if "_ohlcv_restored" not in st.session_state:
                 st.toast(f"☁️ 券商分點歷史已還原：{msg}", icon="✅")
         except Exception:
             pass
+
+# === 自動每日 ETF 持股抓取（每天第一次開 app 時跑）===
+# 用 date.today().isoformat() 當 key，每天自動失效
+_today_key_dt = date.today().isoformat()
+_etf_auto_key = f"_etf_autofetch_{_today_key_dt}"
+if _etf_auto_key not in st.session_state:
+    st.session_state[_etf_auto_key] = True
+    try:
+        # 後台靜默抓，不阻塞 UI（fail-soft）
+        from concurrent.futures import ThreadPoolExecutor as _Te
+        def _auto_etf():
+            try:
+                metas = etf.top_n(5, taiwan_only=True)
+                if not metas:
+                    return
+                codes = [m.code for m in metas]
+                # 看今日是否已抓過任一檔
+                today_iso = date.today().isoformat()
+                fresh = any(today_iso in etf.list_holding_dates(c)
+                            for c in codes)
+                if fresh:
+                    return  # 今天已抓過，不重抓
+                etf_scraper.fetch_all(codes)
+                # 抓完備份
+                if storage.is_configured():
+                    storage.upload_db(etf.DB_PATH,
+                                       message=f"auto ETF fetch {today_iso}")
+            except Exception:
+                pass
+        _Te(max_workers=1).submit(_auto_etf)
+    except Exception:
+        pass
+
+# === 自動每日 Telegram 報告（每天第一次開 app 時，且有設定 TG secrets）===
+_tg_auto_key = f"_tg_dailyreport_{_today_key_dt}"
+if (_tg_auto_key not in st.session_state
+        and telegram_notify.is_configured()):
+    st.session_state[_tg_auto_key] = True
+    try:
+        from concurrent.futures import ThreadPoolExecutor as _Tr
+
+        def _auto_report():
+            try:
+                daily_report.send_daily_report(
+                    top_n=5, auto_fetch_etf=False)  # ETF 已在上面抓過
+            except Exception:
+                pass
+        _Tr(max_workers=1).submit(_auto_report)
+    except Exception:
+        pass
 # 處理上一輪 rerun 設定的模式切換意圖（必須在 widget 渲染前）
 if "_mode_override" in st.session_state:
     st.session_state.app_mode = st.session_state.pop("_mode_override")
@@ -659,6 +710,41 @@ def render_market_sidebar():
                 continue
             st.markdown(f"**{k}**  \n`{v}`")
         st.caption("資料來源：gck99.com.tw（每 60 分鐘更新一次快取）")
+
+    # === 📨 Telegram 每日報告 ===
+    if telegram_notify.is_configured():
+        with st.sidebar.expander("📨 Telegram 每日報告", expanded=False):
+            st.caption("✅ 已設定 Bot Token & Chat ID。"
+                       "每天首次開啟 app 會自動發送一次。")
+            if st.button("📨 立即發送", use_container_width=True,
+                         key="tg_send_now"):
+                with st.spinner("組合並發送報告中…"):
+                    ok, msg = daily_report.send_daily_report(top_n=5)
+                if ok:
+                    st.success(f"✅ {msg}")
+                else:
+                    st.error(f"❌ {msg}")
+            if st.button("🧪 測試連線", use_container_width=True,
+                         key="tg_test"):
+                ok, msg = telegram_notify.send(
+                    "🧪 Teddy 台股分析器測試訊息\n連線正常")
+                if ok:
+                    st.success("✅ 已發送測試訊息")
+                else:
+                    st.error(f"❌ {msg}")
+    else:
+        with st.sidebar.expander("📨 Telegram 通知（未設定）",
+                                  expanded=False):
+            st.caption(
+                "若要每日報告推到 Telegram，在 Streamlit Cloud → "
+                "Settings → Secrets 加入：")
+            st.code('[telegram]\nbot_token = "YOUR_BOT_TOKEN"\n'
+                    'chat_id = "YOUR_CHAT_ID"', language="toml")
+            st.caption(
+                "Bot 申請：找 @BotFather → /newbot；"
+                "Chat ID：先跟 Bot 私訊或加群組後打開 "
+                "`https://api.telegram.org/bot<TOKEN>/getUpdates`"
+            )
 
 
 # ============================================================
