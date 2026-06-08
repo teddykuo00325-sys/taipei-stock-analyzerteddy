@@ -93,10 +93,11 @@ def _section_etf_changes(max_etfs: int = 5) -> str:
     """主動式 ETF 持股變化（最新一日 vs 前一日）."""
     try:
         metas = etf.top_n(max_etfs, taiwan_only=True)
-    except Exception:
-        return ""
+    except Exception as e:
+        return f"\n📊 <b>主動式 ETF</b>：抓取失敗 ({str(e)[:60]})"
     if not metas:
-        return ""
+        return ("\n📊 <b>主動式 ETF</b>：暫無資料"
+                "（yfinance 抓 AUM 失敗 + DB 無快照）")
     lines = ["\n📊 <b>主動式 ETF 持股變化</b>"]
     for m in metas:
         dates = etf.list_holding_dates(m.code)

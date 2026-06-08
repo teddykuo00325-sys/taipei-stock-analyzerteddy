@@ -260,9 +260,37 @@ def is_taiwan_focused(m: EtfMeta) -> bool:
             or "台股" in name_zh or "台灣" in name_zh)
 
 
+def _load_aum_from_db() -> list[EtfMeta]:
+    """從 etf_aum 表還原 metas（給 yfinance 抓不到時 fallback 用）.
+
+    etf_aum PK = (date, code)，同一 code 可能有多筆歷史快照；
+    取每個 code 的最新一筆。
+    """
+    try:
+        with _db_lock, _conn() as c:
+            rows = c.execute("""
+                SELECT date, code, name, family, nav, aum
+                FROM etf_aum
+                WHERE (code, date) IN (
+                    SELECT code, MAX(date) FROM etf_aum GROUP BY code
+                )
+                ORDER BY aum DESC
+            """).fetchall()
+        return [EtfMeta(code=r[1], name=r[2], nav=float(r[4] or 0),
+                         aum=float(r[5] or 0), family=r[3] or "",
+                         updated=r[0] or "", name_en="")
+                for r in rows if r[5] and float(r[5]) > 0]
+    except Exception:
+        return []
+
+
 def refresh_aum(candidates: Iterable[str] | None = None,
                 max_age_sec: int = 86400) -> list[EtfMeta]:
-    """從候選清單抓 AUM、排序、存 DB."""
+    """從候選清單抓 AUM、排序、存 DB.
+
+    yfinance 抓不到時（例如 GitHub Actions / Cloud IP 被 Yahoo 擋），
+    自動 fallback 到 DB 已存的 AUM 快照。
+    """
     now = time()
     if _aum_cache["list"] and now - _aum_cache["time"] < max_age_sec:
         return _aum_cache["list"]
@@ -272,6 +300,9 @@ def refresh_aum(candidates: Iterable[str] | None = None,
         m = _fetch_meta(c)
         if m:
             metas.append(m)
+    # Fallback：若 yfinance 全失敗，從 DB 還原（保留前次 AUM 排序）
+    if not metas:
+        metas = _load_aum_from_db()
     metas.sort(key=lambda x: x.aum, reverse=True)
     _aum_cache["list"] = metas
     _aum_cache["time"] = now
