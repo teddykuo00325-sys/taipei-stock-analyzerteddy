@@ -21,9 +21,13 @@ def _cfg() -> dict | None:
     """讀取 Telegram credentials.
 
     優先順序：
-      1. 環境變數 TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID （給 GitHub
-         Actions / cron 等無 Streamlit context 的環境用）
+      1. 環境變數 TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID
       2. Streamlit secrets [telegram] block
+
+    chat_id 支援多種格式：
+      - 單一字串："5506547630"
+      - 多個逗號分隔："5506547630,-1001234567890,@my_channel"
+      - Streamlit secrets 也可用 list: chat_id = ["123", "456"]
     """
     import os
     env_token = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -39,9 +43,17 @@ def _cfg() -> dict | None:
         chat = g.get("chat_id")
         if not token or not chat:
             return None
+        # secrets 若是 list，join 成逗號分隔字串
+        if isinstance(chat, list):
+            chat = ",".join(str(x) for x in chat)
         return {"token": token, "chat_id": str(chat)}
     except Exception:
         return None
+
+
+def _parse_chats(chat_id_raw: str) -> list[str]:
+    """把 chat_id 字串拆成 list（支援逗號分隔多個）."""
+    return [c.strip() for c in chat_id_raw.split(",") if c.strip()]
 
 
 def is_configured() -> bool:
@@ -52,29 +64,38 @@ def send(text: str,
          parse_mode: str = "HTML",
          disable_preview: bool = True,
          silent: bool = False) -> tuple[bool, str]:
-    """發送訊息到 Telegram. 回傳 (ok, message)."""
+    """發送訊息到 Telegram（支援多個 chat_id）. 回傳 (ok, message)."""
     c = _cfg()
     if not c:
         return False, "未設定 Telegram secrets"
-    # Telegram 訊息上限 4096 chars，過長要切片
     if len(text) > 4000:
-        # 先發第一段
-        first = text[:3950] + "\n\n…（內容過長，已截斷）"
-        text = first
+        text = text[:3950] + "\n\n…（內容過長，已截斷）"
+    chats = _parse_chats(c["chat_id"])
+    if not chats:
+        return False, "chat_id 為空"
     url = f"https://api.telegram.org/bot{c['token']}/sendMessage"
-    try:
-        r = requests.post(url, json={
-            "chat_id": c["chat_id"],
-            "text": text,
-            "parse_mode": parse_mode,
-            "disable_web_page_preview": disable_preview,
-            "disable_notification": silent,
-        }, timeout=15)
-        if r.status_code == 200:
-            return True, "已發送"
-        return False, f"HTTP {r.status_code}: {r.text[:200]}"
-    except Exception as e:
-        return False, f"例外：{e}"
+    n_ok = 0
+    last_err = ""
+    for chat_id in chats:
+        try:
+            r = requests.post(url, json={
+                "chat_id": chat_id,
+                "text": text,
+                "parse_mode": parse_mode,
+                "disable_web_page_preview": disable_preview,
+                "disable_notification": silent,
+            }, timeout=15)
+            if r.status_code == 200:
+                n_ok += 1
+            else:
+                last_err = f"{chat_id}: HTTP {r.status_code} {r.text[:100]}"
+        except Exception as e:
+            last_err = f"{chat_id}: {e}"
+    if n_ok == len(chats):
+        return True, f"已發送（{n_ok} 個收件人）"
+    if n_ok > 0:
+        return True, f"部分成功：{n_ok}/{len(chats)} ｜ 最後錯誤：{last_err}"
+    return False, last_err or "全部失敗"
 
 
 def send_long(text: str, chunk_size: int = 3800,
