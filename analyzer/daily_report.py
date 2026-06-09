@@ -6,10 +6,26 @@
 """
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 
 from . import (backtest_filter, etf, etf_scraper, realbacktest,
                screener, telegram_notify)
+
+
+# 台北時區 (UTC+8) — 確保 GitHub Actions / 雲端 cron 跑時用台灣時間
+TPE_TZ = timezone(timedelta(hours=8))
+
+
+def _now_tpe() -> datetime:
+    """取得當前台北時間（GH Actions UTC 也對）."""
+    return datetime.now(TPE_TZ)
+
+
+DISCLAIMER = (
+    "<i>⚠️ 本系統不提供任何具體的股票、基金、虛擬貨幣等投資買賣建議。"
+    "所有內容僅為客觀資訊分享，投資理財具有潛在風險，"
+    "任何決策皆須自行評估並自負盈虧。</i>"
+)
 
 
 def _section_regime() -> str:
@@ -151,9 +167,11 @@ def build_daily_report(top_n: int = 5,
     """
     if sections is None:
         sections = ["regime", "picks", "backtest", "etf"]
-    today = date.today().strftime("%Y-%m-%d")
+    now = _now_tpe()
+    weekday_zh = "一二三四五六日"[now.weekday()]
+    ts_full = now.strftime("%Y-%m-%d %H:%M")
     parts = [
-        f"📅 <b>{today} 台北股市分析器每日報告</b>",
+        f"📅 <b>{ts_full} (星期{weekday_zh}) 台北股市分析器每日報告</b>",
         "━━━━━━━━━━━━━━━━━━━",
     ]
     if "regime" in sections:
@@ -170,7 +188,8 @@ def build_daily_report(top_n: int = 5,
             parts.append(sect)
     parts.append(
         "\n━━━━━━━━━━━━━━━━━━━\n"
-        "<i>by Teddy 中央印製廠_台北股市分析器</i>"
+        "<i>by Teddy 中央印製廠_台北股市分析器</i>\n\n"
+        + DISCLAIMER
     )
     return "\n".join(parts)
 
