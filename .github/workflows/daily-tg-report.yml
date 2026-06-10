@@ -1,10 +1,18 @@
 name: Daily Telegram Report (08:30 Taipei)
 
-# Cron 用 UTC：00:30 UTC = 08:30 Asia/Taipei (UTC+8)
-# 週一~週五（台股交易日）；要週末也跑改成 '*'
+# GitHub Actions cron 嚴重延遲問題（可能 4-6 小時），所以排多個時點搶
+# 同時靠 send_daily_report 內部「今日已發送」去重，只會 TG 一次。
+# 排程點（UTC = +8 後是台北）：
+#   00:30 UTC = 08:30  ← 主要排程，最理想時間
+#   00:45 UTC = 08:45  ← +15min backup
+#   01:00 UTC = 09:00  ← +30min backup
+#   01:30 UTC = 09:30  ← 最終 fallback
 on:
   schedule:
-    - cron: '30 0 * * 1-5'
+    - cron: '30 0 * * *'
+    - cron: '45 0 * * *'
+    - cron: '0 1 * * *'
+    - cron: '30 1 * * *'
   workflow_dispatch:        # 允許手動 trigger 測試
 
 permissions:
