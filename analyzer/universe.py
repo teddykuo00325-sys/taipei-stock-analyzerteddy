@@ -69,11 +69,47 @@ def fetch_twse_snapshot() -> pd.DataFrame:
 _cache: dict = {"time": 0, "df": None}
 
 
+def _fallback_from_price_cache() -> pd.DataFrame:
+    """TWSE OpenAPI 不通時 fallback：從 price_cache 取所有 code + 最新 volume.
+
+    GitHub Actions IP 被 TWSE geo-block 時用這個。
+    用 K 線 cache 的最後一日資料模擬 TradeVolume 排序。
+    """
+    try:
+        from . import price_cache
+        with price_cache._lock, price_cache._conn() as c:
+            rows = c.execute("""
+                SELECT o.code, o.close, o.volume
+                FROM ohlcv o
+                JOIN (
+                    SELECT code, MAX(date) AS last_dt
+                    FROM ohlcv GROUP BY code
+                ) m ON o.code = m.code AND o.date = m.last_dt
+            """).fetchall()
+        if not rows:
+            return pd.DataFrame()
+        df = pd.DataFrame(rows, columns=["Code", "ClosingPrice",
+                                          "TradeVolume"])
+        df["Name"] = df["Code"]   # 無公司名，僅用 code
+        df["Market"] = "TSE"      # 假設（無從區分）
+        df = df[df["TradeVolume"].fillna(0) > 0].reset_index(drop=True)
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+
 def snapshot(max_age_sec: int = 3600) -> pd.DataFrame:
     now = time()
     if _cache["df"] is not None and now - _cache["time"] < max_age_sec:
         return _cache["df"]
-    df = fetch_twse_snapshot()
+    try:
+        df = fetch_twse_snapshot()
+    except Exception as e:
+        # TWSE / TPEX API 在 GitHub Actions 等海外 IP 常被擋
+        # → fallback 到 price_cache 內已有的 K 線資料
+        df = _fallback_from_price_cache()
+        if df.empty:
+            raise   # 連 fallback 都沒料才拋
     _cache["df"] = df
     _cache["time"] = now
     return df
