@@ -125,9 +125,26 @@ def main() -> int:
     # 2) 還原 K 線
     _restore_ohlcv_from_repo()
 
-    # 3) 寄報告
+    # 3) 先預組報告查每段內容（debug 用）
     try:
         from analyzer import daily_report
+        text_preview = daily_report.build_daily_report(top_n=5)
+        print("=" * 60)
+        print("PREVIEW (組合好的報告，會送到 TG):")
+        print("=" * 60)
+        # 移掉 HTML tags 好讀
+        import re as _re
+        clean = _re.sub(r"<[^>]+>", "", text_preview)
+        print(clean[:3000])
+        if len(clean) > 3000:
+            print(f"... (還有 {len(clean) - 3000} 字)")
+        print("=" * 60)
+    except Exception as e:
+        print(f"[preview] FAILED: {e}", file=sys.stderr)
+        import traceback; traceback.print_exc()
+
+    # 4) 寄報告
+    try:
         ok, msg = daily_report.send_daily_report(
             top_n=5, auto_fetch_etf=True)
         if ok:
