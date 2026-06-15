@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 
-from . import (backtest_filter, etf, etf_scraper, realbacktest,
-               screener, telegram_notify)
+from . import (backtest_filter, etf, etf_scraper, marketdata,
+               realbacktest, screener, telegram_notify)
 
 
 # 台北時區 (UTC+8) — 確保 GitHub Actions / 雲端 cron 跑時用台灣時間
@@ -34,6 +34,53 @@ def _section_regime() -> str:
             f"   TWII <b>{r.twii_close:,.0f}</b> ｜ "
             f"MA20-MA60 差 {r.ma_gap_pct:+.1f}%\n"
             f"   <i>{r.note}</i>")
+
+
+def _section_commodities() -> str:
+    """國際商品 + 展寬貴金屬牌價."""
+    lines: list[str] = []
+    # === 國際商品（yfinance + stooq）===
+    try:
+        intl = marketdata.fetch_international()
+    except Exception:
+        intl = {}
+    if intl:
+        lines.append("\n💎 <b>國際商品行情</b>")
+        # 取我們要的 4 個 + 匯率
+        order = [
+            ("gold",    "🪙 黃金",    "USD/oz"),
+            ("silver",  "🥈 白銀",    "USD/oz"),
+            ("brent",   "🛢 布蘭特",  "USD"),
+            ("wti",     "🛢 西德州",  "USD"),
+            ("usd_twd", "💵 美元/台幣", ""),
+            ("jpy_twd", "💴 日圓/台幣", ""),
+        ]
+        for key, label, unit in order:
+            q = intl.get(key)
+            if not q:
+                continue
+            arrow = "🔴" if q.change >= 0 else "🟢"
+            unit_str = f" {unit}" if unit else ""
+            lines.append(
+                f"   {arrow} {label}　<b>{q.price:,.{q.precision}f}</b>"
+                f"{unit_str}　"
+                f"({q.change:+.{q.precision}f} / {q.change_pct:+.2f}%)"
+            )
+
+    # === 展寬貴金屬當日回收牌價 (gck99.com.tw) ===
+    try:
+        gck = marketdata.fetch_gck99()
+    except Exception:
+        gck = {}
+    if gck:
+        valid = {k: v for k, v in gck.items()
+                 if not k.startswith("_") and v != "N/A"}
+        if valid:
+            lines.append("\n💰 <b>展寬貴金屬當日回收牌價</b>")
+            for k, v in valid.items():
+                lines.append(f"   • <b>{k}</b>：{v}")
+
+    return "\n".join(lines)
 
 
 def _section_picks(top_n: int = 5) -> str:
@@ -166,7 +213,7 @@ def build_daily_report(top_n: int = 5,
               可選: ['regime', 'picks', 'backtest', 'etf']
     """
     if sections is None:
-        sections = ["regime", "picks", "backtest", "etf"]
+        sections = ["regime", "commodities", "picks", "backtest", "etf"]
     now = _now_tpe()
     weekday_zh = "一二三四五六日"[now.weekday()]
     ts_full = now.strftime("%Y-%m-%d %H:%M")
@@ -176,6 +223,10 @@ def build_daily_report(top_n: int = 5,
     ]
     if "regime" in sections:
         parts.append(_section_regime())
+    if "commodities" in sections:
+        sect = _section_commodities()
+        if sect:
+            parts.append(sect)
     if "picks" in sections:
         parts.append(_section_picks(top_n=top_n))
     if "backtest" in sections:
