@@ -48,7 +48,7 @@ def _section_commodities() -> str:
         lines.append("\n💎 <b>國際商品行情</b>")
         # 取我們要的 4 個 + 匯率
         order = [
-            ("gold",    "🪙 黃金",    "USD/oz"),
+            ("gold",    "🥇 黃金",    "USD/oz"),
             ("silver",  "🥈 白銀",    "USD/oz"),
             ("brent",   "🛢 布蘭特",  "USD"),
             ("wti",     "🛢 西德州",  "USD"),

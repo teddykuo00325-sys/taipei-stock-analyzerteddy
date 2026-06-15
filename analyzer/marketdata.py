@@ -24,7 +24,7 @@ except ImportError:
 logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 
 YF_TICKERS = {
-    "gold":    ("GC=F",    "🪙 黃金 (USD/oz)", 2),
+    "gold":    ("GC=F",    "🥇 黃金 (USD/oz)", 2),
     "silver":  ("SI=F",    "🥈 白銀 (USD/oz)", 2),
     "brent":   ("BZ=F",    "🛢 布蘭特 (USD)", 2),
     "wti":     ("CL=F",    "🛢 西德州 (USD)", 2),
