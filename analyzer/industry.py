@@ -91,15 +91,67 @@ def _fetch_raw() -> pd.DataFrame:
     return df
 
 
+import sqlite3 as _sqlite3
+from pathlib import Path as _Path
+
+_DB_PATH = _Path(__file__).parent.parent / "data" / "industry.db"
+_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+
+def _save_to_db(df: pd.DataFrame) -> None:
+    """成功 fetch 後存到 SQLite 給日後 fallback 用."""
+    if df is None or df.empty:
+        return
+    try:
+        with _sqlite3.connect(_DB_PATH) as c:
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS industry (
+                    code TEXT PRIMARY KEY,
+                    short_name TEXT,
+                    full_name TEXT,
+                    ind_code TEXT,
+                    name_en TEXT,
+                    industry TEXT,
+                    market TEXT
+                )
+            """)
+            c.execute("DELETE FROM industry")
+            rows = [(r["code"], r.get("short_name"), r.get("full_name"),
+                     r.get("ind_code"), r.get("name_en"),
+                     r.get("industry"), r.get("market"))
+                    for _, r in df.iterrows()]
+            c.executemany(
+                "INSERT INTO industry VALUES (?,?,?,?,?,?,?)", rows)
+    except Exception:
+        pass
+
+
+def _load_from_db() -> pd.DataFrame:
+    """從 SQLite 還原（給 fetch 失敗 fallback 用）."""
+    if not _DB_PATH.exists():
+        return pd.DataFrame()
+    try:
+        with _sqlite3.connect(_DB_PATH) as c:
+            df = pd.read_sql_query("SELECT * FROM industry", c)
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+
 def snapshot(max_age_sec: int = 86400) -> pd.DataFrame:
     now = time()
     if _cache["df"] is not None and now - _cache["time"] < max_age_sec:
         return _cache["df"]
     try:
         df = _fetch_raw()
+        if df is not None and not df.empty:
+            _save_to_db(df)  # 成功時持久化
     except Exception:
-        return pd.DataFrame(columns=["code", "short_name", "full_name",
-                                      "ind_code", "name_en", "industry"])
+        # API 失敗 → 試 DB fallback
+        df = _load_from_db()
+        if df.empty:
+            return pd.DataFrame(columns=["code", "short_name", "full_name",
+                                          "ind_code", "name_en", "industry"])
     _cache["df"] = df
     _cache["time"] = now
     return df
