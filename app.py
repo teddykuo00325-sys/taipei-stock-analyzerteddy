@@ -764,6 +764,12 @@ if mode == "🎯 今日選股":
         value=200, step=50,
         help="先依今日成交量排除小量股以加速掃描；預設 200 張",
     )
+    use_filter_today = st.sidebar.checkbox(
+        "套用 5 層智慧過濾（與 TG 推送一致）",
+        value=True, key="today_use_filter",
+        help="Lv1 大盤 regime ｜ Lv2 分數 ≥+70/≤-70 ｜ "
+             "Lv3 同產業 ≤2 檔 ｜ Lv5 波浪/葛蘭碧訊號方向一致",
+    )
     go_btn = st.sidebar.button("🚀 開始掃描", use_container_width=True, type="primary")
 
     # 快取狀態 + 手動備份
@@ -856,12 +862,40 @@ if mode == "🎯 今日選股":
             progress_bar.progress(min(max(pct, 0.0), 1.0), text=msg)
 
         try:
+            # 若啟用 5 層過濾 → 多取 3 倍候選給 filter 篩
+            eff_top_n = max(int(top_n) * 3, 15) \
+                if use_filter_today else int(top_n)
             result = screener.screen(
                 min_avg_volume_lots=int(min_vol),
-                top_n=int(top_n),
+                top_n=eff_top_n,
                 pre_filter_lots_today=int(pre_filter),
                 progress_cb=_cb,
             )
+
+            # 套 5 層過濾（與 TG 推送邏輯一致）
+            if use_filter_today and result.get("passed", 0) > 0:
+                ind_map = result.get("industry_map", {})
+                long_raw = result["long"].to_dict("records")
+                short_raw = result["short"].to_dict("records")
+                rep_l = backtest_filter.apply_all_filters(
+                    "long", long_raw, industry_map=ind_map)
+                rep_s = backtest_filter.apply_all_filters(
+                    "short", short_raw, industry_map=ind_map)
+                # 用 filtered 取代原 long/short
+                if rep_l.proceed:
+                    result["long"] = pd.DataFrame(
+                        rep_l.picks_filtered[:int(top_n)])
+                else:
+                    result["long"] = pd.DataFrame()
+                if rep_s.proceed:
+                    result["short"] = pd.DataFrame(
+                        rep_s.picks_filtered[:int(top_n)])
+                else:
+                    result["short"] = pd.DataFrame()
+                # 把 filter 報告也存起來供 UI 顯示
+                result["_filter_long"] = rep_l
+                result["_filter_short"] = rep_s
+
             st.session_state.screener_result = result
             st.session_state.screener_params = cur_params
             import datetime as _dt
@@ -889,6 +923,36 @@ if mode == "🎯 今日選股":
     if result is None:
         st.info("👈 於左側設定條件後按『開始掃描』")
         st.stop()
+
+    # 5 層過濾報告（與 TG 一致時顯示 regime + 剔除列表）
+    rep_l_today = result.get("_filter_long")
+    rep_s_today = result.get("_filter_short")
+    if rep_l_today is not None:
+        st.info(
+            f"🔍 已套用 5 層智慧過濾（與 TG 推送一致）｜"
+            f"📊 大盤 regime：**{rep_l_today.regime.label_zh}**"
+        )
+        if not rep_l_today.proceed:
+            st.warning(f"🚫 多單：{rep_l_today.skip_reason}")
+        if rep_s_today and not rep_s_today.proceed:
+            st.warning(f"🚫 空單：{rep_s_today.skip_reason}")
+        # 剔除原因 expander
+        rejected_l = (rep_l_today.filter_result.rejected
+                      if rep_l_today.proceed else [])
+        rejected_s = (rep_s_today.filter_result.rejected
+                      if rep_s_today and rep_s_today.proceed else [])
+        if rejected_l or rejected_s:
+            with st.expander(
+                    f"📋 被過濾掉 {len(rejected_l)} 檔多 + {len(rejected_s)} 檔空",
+                    expanded=False):
+                if rejected_l:
+                    st.markdown("**多單剔除**")
+                    for p, why in rejected_l[:20]:
+                        st.caption(f"❌ {p['代號']} {p['名稱']}：{why}")
+                if rejected_s:
+                    st.markdown("**空單剔除**")
+                    for p, why in rejected_s[:20]:
+                        st.caption(f"❌ {p['代號']} {p['名稱']}：{why}")
 
     # 顯示上次掃描資訊
     if st.session_state.screener_params:
