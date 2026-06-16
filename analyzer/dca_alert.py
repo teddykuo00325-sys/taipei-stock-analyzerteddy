@@ -119,8 +119,23 @@ def evaluate(code: str) -> AlertResult | None:
                 f"   RSI {rsi:.0f}（未過熱）")
         suggestion = "建議小額加碼（5-10% 月閒置資金）"
 
+    # 未觸發任何等級：仍回傳 NONE 狀態，讓 UI/TG 可顯示「目前正常」
     if level == "NONE":
-        return None  # 不在區間內，不發警示
+        note = (f"<b>⚪ {name}（{code}）</b> 現價 <b>{close:.2f}</b>  "
+                f"20d {pb_20:+.1f}% ｜ 60d {pb_60:+.1f}% "
+                f"｜ RSI {rsi:.0f}" if rsi else
+                f"<b>⚪ {name}（{code}）</b> 現價 <b>{close:.2f}</b>  "
+                f"20d {pb_20:+.1f}% ｜ 60d {pb_60:+.1f}%")
+        suggestion = "未達加碼條件，續抱觀察"
+        return AlertResult(
+            code=code, name=name, level="NONE", emoji="⚪",
+            close=close, pullback_20d=round(pb_20, 2),
+            pullback_60d=round(pb_60, 2), pullback_252d=round(pb_252, 2),
+            rsi=round(rsi, 1) if rsi else None,
+            ma60=round(ma60, 2) if ma60 else None,
+            ma200=round(ma200, 2) if ma200 else None,
+            note=note, suggestion=suggestion,
+        )
 
     return AlertResult(
         code=code, name=name, level=level, emoji=emoji,
@@ -135,11 +150,17 @@ def evaluate(code: str) -> AlertResult | None:
 
 def evaluate_targets(codes: list[str] | None = None
                      ) -> list[AlertResult]:
-    """掃預設或指定的標的，回傳所有觸發警示者."""
+    """掃預設或指定的標的，回傳所有結果（含未觸發的 NONE 狀態）.
+
+    SMALL / MEDIUM / LARGE 排序在前（依嚴重度），NONE 在後。
+    """
     codes = codes or DEFAULT_TARGETS
     out = []
     for c in codes:
         r = evaluate(c)
         if r:
             out.append(r)
+    # 依等級嚴重度排序：LARGE > MEDIUM > SMALL > NONE
+    order = {"LARGE": 0, "MEDIUM": 1, "SMALL": 2, "NONE": 3}
+    out.sort(key=lambda x: order.get(x.level, 9))
     return out

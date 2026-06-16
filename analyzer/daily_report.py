@@ -44,7 +44,7 @@ def _section_regime() -> str:
 
 
 def _section_dca_alerts() -> str:
-    """0050 / 2330 撿便宜警示 — 只在有觸發等級時才顯示."""
+    """0050 / 2330 撿便宜警示 — 即使未觸發也顯示「續抱觀察」一行."""
     try:
         alerts = dca_alert.evaluate_targets()
     except Exception:
@@ -53,8 +53,12 @@ def _section_dca_alerts() -> str:
         return ""
     lines = ["\n💰 <b>長期持股撿便宜訊號</b>"]
     for a in alerts:
-        lines.append(a.note)
-        lines.append(f"   <i>📝 {a.suggestion}</i>")
+        if a.level == "NONE":
+            # 簡短一行：⚪ 標的 現價 + 回檔% + RSI
+            lines.append(a.note + f"\n   <i>📝 {a.suggestion}</i>")
+        else:
+            lines.append(a.note)
+            lines.append(f"   <i>📝 {a.suggestion}</i>")
     return "\n".join(lines)
 
 
