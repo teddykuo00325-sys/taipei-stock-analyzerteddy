@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 
-from . import (backtest_filter, etf, etf_scraper, marketdata,
-               realbacktest, screener, telegram_notify)
+from . import (backtest_filter, dca_alert, etf, etf_scraper,
+               marketdata, realbacktest, screener, telegram_notify)
 
 
 # 台北時區 (UTC+8) — 確保 GitHub Actions / 雲端 cron 跑時用台灣時間
@@ -30,10 +30,32 @@ DISCLAIMER = (
 
 def _section_regime() -> str:
     r = backtest_filter.detect_regime()
+    # 額外標記「tiebreaker 動態權重」資訊
+    weight_note = {
+        "bull":     "強多頭 → tiebreaker 重「不過熱+甜蜜起漲」",
+        "bear":     "強空頭 → tiebreaker 重「動能+爆量」",
+        "sideways": "整理 → tiebreaker 多空中性權重",
+    }.get(r.label, "")
     return (f"📊 <b>大盤 regime</b>：{r.label_zh}\n"
             f"   TWII <b>{r.twii_close:,.0f}</b> ｜ "
             f"MA20-MA60 差 {r.ma_gap_pct:+.1f}%\n"
-            f"   <i>{r.note}</i>")
+            f"   <i>{r.note}</i>\n"
+            f"   <i>⚙️ {weight_note}</i>")
+
+
+def _section_dca_alerts() -> str:
+    """0050 / 2330 撿便宜警示 — 只在有觸發等級時才顯示."""
+    try:
+        alerts = dca_alert.evaluate_targets()
+    except Exception:
+        return ""
+    if not alerts:
+        return ""
+    lines = ["\n💰 <b>長期持股撿便宜訊號</b>"]
+    for a in alerts:
+        lines.append(a.note)
+        lines.append(f"   <i>📝 {a.suggestion}</i>")
+    return "\n".join(lines)
 
 
 def _section_commodities() -> str:
@@ -213,7 +235,8 @@ def build_daily_report(top_n: int = 5,
               可選: ['regime', 'picks', 'backtest', 'etf']
     """
     if sections is None:
-        sections = ["regime", "commodities", "picks", "backtest", "etf"]
+        sections = ["regime", "dca", "commodities", "picks",
+                    "backtest", "etf"]
     now = _now_tpe()
     weekday_zh = "一二三四五六日"[now.weekday()]
     ts_full = now.strftime("%Y-%m-%d %H:%M")
@@ -223,6 +246,10 @@ def build_daily_report(top_n: int = 5,
     ]
     if "regime" in sections:
         parts.append(_section_regime())
+    if "dca" in sections:
+        sect = _section_dca_alerts()
+        if sect:
+            parts.append(sect)
     if "commodities" in sections:
         sect = _section_commodities()
         if sect:

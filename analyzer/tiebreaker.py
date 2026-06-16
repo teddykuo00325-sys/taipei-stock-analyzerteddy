@@ -27,6 +27,30 @@ from dataclasses import dataclass, field
 
 import pandas as pd
 
+# === Regime-aware 權重 ===
+# 多頭環境：實證顯示「不追熱」型維度勝率高（F, D 強）
+# 空頭環境：理論上「爆量突破」「動能加速」反而是真實力道訊號（A, C 強）
+# 整理環境：取多空中間值
+_WEIGHTS = {
+    "bull": {  # 強多頭
+        "A_max": 10, "B_max": 20, "C_max": 8,  "D_max": 20,
+        "E_max": 8,  "F_max": 25, "G_max": 10,
+    },
+    "bear": {  # 強空頭（A/C 反轉為強訊號）
+        "A_max": 20, "B_max": 20, "C_max": 18, "D_max": 10,
+        "E_max": 10, "F_max": 12, "G_max": 15,
+    },
+    "sideways": {  # 整理（介於兩者）
+        "A_max": 15, "B_max": 20, "C_max": 12, "D_max": 15,
+        "E_max": 10, "F_max": 18, "G_max": 12,
+    },
+}
+
+
+def _get_weights(regime: str | None) -> dict:
+    """依 regime 取 7 維度權重；未指定用 sideways."""
+    return _WEIGHTS.get(regime or "sideways", _WEIGHTS["sideways"])
+
 
 @dataclass
 class TiebreakDetail:
@@ -253,24 +277,50 @@ def _compute_penalty(df: pd.DataFrame, diag, notes: list[str]) -> int:
 # ============================================================
 # 主入口
 # ============================================================
-def compute(df: pd.DataFrame, diag) -> TiebreakDetail:
+def compute(df: pd.DataFrame, diag,
+             regime: str | None = None) -> TiebreakDetail:
     """計算 tiebreak 分數.
 
     df: K 線 (含 indicators — ma5/ma10/ma20/k/d/rsi/macd_hist/volume)
     diag: Diagnosis 物件（用 institutional_info / margin_info / candles）
+    regime: 'bull' / 'bear' / 'sideways'，None 自動偵測；用於選權重組
     """
     if df is None or df.empty:
         return TiebreakDetail(total=0)
     notes: list[str] = []
-    a = _score_breakout(df, notes)
-    b = _score_institutional(diag, notes)
-    c = _score_momentum(df, notes)
-    d = _score_not_overheated(df, notes)
-    e = _score_signal_freshness(df, notes)
-    f = _score_sweet_spot(df, notes)
-    g = _score_short_squeeze(diag, notes)
+
+    # 自動偵測 regime（若沒指定）— 使用 backtest_filter
+    if regime is None:
+        try:
+            from . import backtest_filter
+            regime = backtest_filter.detect_regime().label  # bull/bear/sideways
+        except Exception:
+            regime = "sideways"
+
+    w = _get_weights(regime)
+    # 算原始分數
+    a_raw = _score_breakout(df, notes)
+    b_raw = _score_institutional(diag, notes)
+    c_raw = _score_momentum(df, notes)
+    d_raw = _score_not_overheated(df, notes)
+    e_raw = _score_signal_freshness(df, notes)
+    f_raw = _score_sweet_spot(df, notes)
+    g_raw = _score_short_squeeze(diag, notes)
+    # 用 regime 權重 scale（原始最大分 ≈ baseline，依比例調）
+    # baseline maxes: A=10, B=20, C=8, D=20, E=8, F=25, G=10
+    base = {"A": 10, "B": 20, "C": 8, "D": 20,
+            "E": 8, "F": 25, "G": 10}
+    a = int(round(a_raw * w["A_max"] / base["A"])) if a_raw else 0
+    b = int(round(b_raw * w["B_max"] / base["B"])) if b_raw else 0
+    c = int(round(c_raw * w["C_max"] / base["C"])) if c_raw else 0
+    d = int(round(d_raw * w["D_max"] / base["D"])) if d_raw else 0
+    e = int(round(e_raw * w["E_max"] / base["E"])) if e_raw else 0
+    f = int(round(f_raw * w["F_max"] / base["F"])) if f_raw else 0
+    g = int(round(g_raw * w["G_max"] / base["G"])) if g_raw else 0
     penalty = _compute_penalty(df, diag, notes)
     total = a + b + c + d + e + f + g + penalty
+    if regime != "sideways":
+        notes.insert(0, f"[regime={regime} 動態權重]")
     return TiebreakDetail(
         total=total, a_breakout=a, b_institutional=b, c_momentum=c,
         d_not_overheated=d, e_signal_fresh=e, f_sweet_spot=f,

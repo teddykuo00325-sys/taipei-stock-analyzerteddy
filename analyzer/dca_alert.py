@@ -1,0 +1,145 @@
+"""長期 DCA 撿便宜警示 — 針對 0050 / 2330 等核心持股.
+
+理念：使用者長期持有 0050 / 2330，但在跌深時加碼比平均成本買法 IRR 更高。
+本模組提供 3 層警示，從常見到極端：
+
+  🟢 SMALL — 月頻：20 日高點回檔 ≥ 3% AND RSI < 50
+  🟡 MEDIUM — 季頻：60 日高點回檔 ≥ 7% AND 跌破 MA60
+  🔴 LARGE — 年頻：252 日高點回檔 ≥ 15% AND RSI < 30 AND 跌破 MA200
+
+對外 API:
+  evaluate(code) -> AlertResult | None
+  evaluate_targets() -> dict[code → AlertResult]  預設掃 ['0050', '2330']
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import pandas as pd
+
+# 預設追蹤標的（你的核心持股）
+DEFAULT_TARGETS = ["0050", "2330"]
+
+
+@dataclass
+class AlertResult:
+    code: str
+    name: str
+    level: str            # 'SMALL' / 'MEDIUM' / 'LARGE' / 'NONE'
+    emoji: str            # 🟢 / 🟡 / 🔴 / ⚪
+    close: float
+    pullback_20d: float   # 從 20 日高點回檔 %（負數）
+    pullback_60d: float
+    pullback_252d: float
+    rsi: float | None
+    ma60: float | None
+    ma200: float | None
+    note: str
+    suggestion: str       # 中文建議
+
+
+def _safe_name(code: str) -> str:
+    """從 industry 抓中文名；fallback 用 code."""
+    try:
+        from . import industry as _ind
+        df = _ind.snapshot()
+        if not df.empty:
+            row = df[df["code"].astype(str) == str(code)]
+            if not row.empty:
+                return str(row.iloc[0]["short_name"])
+    except Exception:
+        pass
+    return code
+
+
+def evaluate(code: str) -> AlertResult | None:
+    """評估單一標的的撿便宜訊號等級."""
+    from . import indicators, price_cache
+    try:
+        df_raw = price_cache._load(code)
+    except Exception:
+        return None
+    if df_raw is None or df_raw.empty or len(df_raw) < 60:
+        return None
+
+    df = indicators.add_all(df_raw)
+    last = df.iloc[-1]
+    close = float(last["close"])
+
+    # 高點 / 回檔
+    h_20 = float(df["high"].tail(20).max())
+    h_60 = float(df["high"].tail(60).max())
+    h_252 = float(df["high"].tail(252).max()) if len(df) >= 252 \
+        else float(df["high"].max())
+
+    pb_20 = (close / h_20 - 1) * 100
+    pb_60 = (close / h_60 - 1) * 100
+    pb_252 = (close / h_252 - 1) * 100
+
+    # 技術位置
+    rsi = float(last.get("rsi")) if pd.notna(last.get("rsi")) else None
+    ma60 = float(last.get("ma60")) if pd.notna(last.get("ma60")) else None
+    # MA200 自己算（indicators 沒提供）
+    ma200 = (float(df["close"].tail(200).mean())
+             if len(df) >= 200 else None)
+
+    name = _safe_name(code)
+    level = "NONE"
+    emoji = "⚪"
+    note = ""
+    suggestion = ""
+
+    # === LARGE：年頻（黑天鵝級）===
+    if (pb_252 <= -15 and (rsi is None or rsi < 30)
+            and ma200 and close < ma200):
+        level = "LARGE"
+        emoji = "🔴"
+        note = (f"<b>{emoji} {name} 大型撿便宜（年頻）</b>\n"
+                f"   現價 <b>{close:.2f}</b> ｜ 一年高點回檔 <b>{pb_252:+.1f}%</b>\n"
+                f"   RSI {rsi:.0f} ｜ MA200 {ma200:.2f} （跌破年線）")
+        suggestion = "建議重押加碼（50%+ 月閒置資金或加重資產配置）"
+
+    # === MEDIUM：季頻 ===
+    elif pb_60 <= -7 and ma60 and close < ma60:
+        level = "MEDIUM"
+        emoji = "🟡"
+        note = (f"<b>{emoji} {name} 中型撿便宜（季頻）</b>\n"
+                f"   現價 <b>{close:.2f}</b> ｜ 60 日高點回檔 "
+                f"<b>{pb_60:+.1f}%</b>\n"
+                f"   MA60 {ma60:.2f}（跌破季線）")
+        suggestion = "建議中度加碼（20-30% 月閒置資金）"
+
+    # === SMALL：月頻 ===
+    elif pb_20 <= -3 and rsi is not None and rsi < 50:
+        level = "SMALL"
+        emoji = "🟢"
+        note = (f"<b>{emoji} {name} 小型撿便宜（月頻）</b>\n"
+                f"   現價 <b>{close:.2f}</b> ｜ 20 日高點回檔 "
+                f"<b>{pb_20:+.1f}%</b>\n"
+                f"   RSI {rsi:.0f}（未過熱）")
+        suggestion = "建議小額加碼（5-10% 月閒置資金）"
+
+    if level == "NONE":
+        return None  # 不在區間內，不發警示
+
+    return AlertResult(
+        code=code, name=name, level=level, emoji=emoji,
+        close=close, pullback_20d=round(pb_20, 2),
+        pullback_60d=round(pb_60, 2), pullback_252d=round(pb_252, 2),
+        rsi=round(rsi, 1) if rsi else None,
+        ma60=round(ma60, 2) if ma60 else None,
+        ma200=round(ma200, 2) if ma200 else None,
+        note=note, suggestion=suggestion,
+    )
+
+
+def evaluate_targets(codes: list[str] | None = None
+                     ) -> list[AlertResult]:
+    """掃預設或指定的標的，回傳所有觸發警示者."""
+    codes = codes or DEFAULT_TARGETS
+    out = []
+    for c in codes:
+        r = evaluate(c)
+        if r:
+            out.append(r)
+    return out
