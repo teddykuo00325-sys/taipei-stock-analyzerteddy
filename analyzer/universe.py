@@ -90,7 +90,21 @@ def _fallback_from_price_cache() -> pd.DataFrame:
             return pd.DataFrame()
         df = pd.DataFrame(rows, columns=["Code", "ClosingPrice",
                                           "TradeVolume"])
-        df["Name"] = df["Code"]   # 無公司名，僅用 code
+        df["Code"] = df["Code"].astype(str)
+        # 嘗試從 industry.snapshot() 抓中文名（不同 OpenAPI endpoint，
+        # 可能 STOCK_DAY_ALL 被擋但 t187ap03_L 仍可達）
+        df["Name"] = df["Code"]   # 預設 fallback：code 當名稱
+        try:
+            from . import industry as _ind
+            ind_df = _ind.snapshot()
+            if ind_df is not None and not ind_df.empty:
+                name_map = dict(zip(
+                    ind_df["code"].astype(str),
+                    ind_df["short_name"].fillna("").astype(str)))
+                df["Name"] = df["Code"].map(
+                    lambda c: name_map.get(c) or c)
+        except Exception:
+            pass
         df["Market"] = "TSE"      # 假設（無從區分）
         df = df[df["TradeVolume"].fillna(0) > 0].reset_index(drop=True)
         return df

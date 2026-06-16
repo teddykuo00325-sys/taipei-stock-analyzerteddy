@@ -3,14 +3,16 @@
 當主評分系統把多檔股票評為同分（譬如 5+ 檔都是 100 分）時，需要二級
 排序機制來挑「短線勝率最高」的進場標的。
 
-7 個正向維度（總計 +110）：
-  A 爆量突破 (+25)       — 主力進場最強訊號
-  B 法人連續買超 (+20)   — 短線最持續買盤
-  C 動能加速 (+20)       — 多頭排列「拉開距離」
-  D 不過熱 (+15)         — RSI < 70 + 乖離 < 5%
-  E KD/MACD 鮮度 (+10)   — 訊號剛發動續航強
-  F 短期動能甜蜜點 (+10) — 昨漲 +1~+5%
-  G 軋空潛力 (+10)       — 券資比 > 15%
+權重（v2，已經過 30 天 27,741 觸發點實證調整）：
+
+7 個正向維度（總計 +101）：
+  F 短期動能甜蜜點 (+25) ★ 實證勝率 54.6% 最高（昨漲 +1~3%）
+  D 不過熱 (+20)            ★ 實證勝率 54.2%、N=13k 最穩定
+  B 法人連續買超 (+20)      無歷史回測，依理論保留
+  A 爆量突破 (+10) ↓        實證 48.7%（多頭中追熱反失利）
+  G 軋空潛力 (+10)          無歷史回測，依理論保留
+  C 動能加速 (+8) ↓         實證 48.7%（多頭中過熱反指標）
+  E KD/MACD 鮮度 (+8) ↓     實證 51.0% 接近 baseline
 
 5 個反向扣分（殺手警訊，最多 -53）：
   乖離過高 (-15)、單日衝太兇 (-10)、連續紅 K 過久 (-10)
@@ -41,7 +43,7 @@ class TiebreakDetail:
 
 
 # ============================================================
-# A. 爆量突破 (+25)
+# A. 爆量突破 (+10) — 實證調降：強多頭中追熱反失利（30 日勝率 48.7%）
 # ============================================================
 def _score_breakout(df: pd.DataFrame, notes: list[str]) -> int:
     if len(df) < 21:
@@ -57,14 +59,14 @@ def _score_breakout(df: pd.DataFrame, notes: list[str]) -> int:
     high_10 = float(df["high"].iloc[-11:-1].max())
     breakthrough = float(last["close"]) > high_10
     if breakthrough and vol_ratio >= 1.5:
-        notes.append(f"爆量突破 10 日新高 ({vol_ratio:.1f}x 量) +25")
-        return 25
-    if breakthrough and vol_ratio >= 1.2:
-        notes.append(f"突破 10 日新高 ({vol_ratio:.1f}x 量) +15")
-        return 15
-    if vol_ratio >= 2.0:
-        notes.append(f"爆量但未破前高 ({vol_ratio:.1f}x) +10")
+        notes.append(f"爆量突破 10 日新高 ({vol_ratio:.1f}x 量) +10")
         return 10
+    if breakthrough and vol_ratio >= 1.2:
+        notes.append(f"突破 10 日新高 ({vol_ratio:.1f}x 量) +6")
+        return 6
+    if vol_ratio >= 2.0:
+        notes.append(f"爆量但未破前高 ({vol_ratio:.1f}x) +4")
+        return 4
     return 0
 
 
@@ -91,7 +93,7 @@ def _score_institutional(diag, notes: list[str]) -> int:
 
 
 # ============================================================
-# C. 動能加速 (+20)
+# C. 動能加速 (+8) — 實證調降：多頭中過熱反失利（30 日勝率 48.7%）
 # ============================================================
 def _score_momentum(df: pd.DataFrame, notes: list[str]) -> int:
     last = df.iloc[-1]
@@ -101,44 +103,43 @@ def _score_momentum(df: pd.DataFrame, notes: list[str]) -> int:
     r1 = float(ma5) / float(ma10)
     r2 = float(ma10) / float(ma20)
     if r1 >= 1.02 and r2 >= 1.01:
-        notes.append(f"動能加速 (5/10={r1:.3f}, 10/20={r2:.3f}) +20")
-        return 20
+        notes.append(f"動能加速 (5/10={r1:.3f}, 10/20={r2:.3f}) +8")
+        return 8
     if r1 >= 1.01 and r2 >= 1.005:
-        notes.append(f"中度動能 (5/10={r1:.3f}) +12")
-        return 12
-    if r1 >= 1.0 and r2 >= 1.0:
+        notes.append(f"中度動能 (5/10={r1:.3f}) +5")
         return 5
+    if r1 >= 1.0 and r2 >= 1.0:
+        return 2
     return 0
 
 
 # ============================================================
-# D. 不過熱 (+15)
+# D. 不過熱 (+20) — 實證調升：勝率 54.2%、N=13,173 最穩定預測力
 # ============================================================
 def _score_not_overheated(df: pd.DataFrame, notes: list[str]) -> int:
     last = df.iloc[-1]
     score = 0
     rsi = last.get("rsi")
     if pd.notna(rsi) and rsi is not None and rsi < 70:
-        score += 7
+        score += 10
     ma10 = last.get("ma10")
     if pd.notna(ma10) and ma10 is not None and ma10 > 0:
         dev = (float(last["close"]) / float(ma10) - 1) * 100
         if dev < 5:
-            score += 8
+            score += 10
             notes.append(f"未過熱 (乖離 {dev:+.1f}%, RSI {rsi:.0f}) +{score}")
         elif dev < 8:
-            score += 4
+            score += 5
     return score
 
 
 # ============================================================
-# E. KD/MACD 鮮度 (+10)
+# E. KD/MACD 鮮度 (+8) — 實證略降：勝率 51.0% 接近 baseline
 # ============================================================
 def _score_signal_freshness(df: pd.DataFrame, notes: list[str]) -> int:
     if len(df) < 4 or "k" not in df.columns or "d" not in df.columns:
         return 0
     score = 0
-    # KD 近 3 日內金叉
     for back in range(1, 4):
         if back + 1 > len(df):
             break
@@ -149,24 +150,23 @@ def _score_signal_freshness(df: pd.DataFrame, notes: list[str]) -> int:
         if pd.isna(prev_k) or pd.isna(cur_k):
             continue
         if prev_k <= prev_d and cur_k > cur_d:
-            add = max(8 - (back - 1) * 2, 2)
+            add = max(6 - (back - 1) * 2, 2)
             score += add
             notes.append(f"KD 金叉 {back} 日內 +{add}")
             break
-    # MACD histogram 連續放大
     if "macd_hist" in df.columns and len(df) >= 4:
         h = df["macd_hist"].iloc[-3:].values
         if len(h) == 3 and not any(pd.isna(x) for x in h):
             if h[2] > h[1] > h[0] > 0:
-                score += 5
-                notes.append("MACD hist 連續放大 +5")
+                score += 4
+                notes.append("MACD hist 連續放大 +4")
             elif h[2] > h[1]:
                 score += 2
-    return min(score, 10)
+    return min(score, 8)
 
 
 # ============================================================
-# F. 短期動能甜蜜點 (+10)
+# F. 短期動能甜蜜點 (+25) — 實證調升：勝率 54.6% 最高、N=2,960
 # ============================================================
 def _score_sweet_spot(df: pd.DataFrame, notes: list[str]) -> int:
     if len(df) < 2:
@@ -177,13 +177,14 @@ def _score_sweet_spot(df: pd.DataFrame, notes: list[str]) -> int:
         return 0
     pct = (float(last["close"]) / float(prev["close"]) - 1) * 100
     if 1.0 <= pct <= 3.0:
-        notes.append(f"甜蜜起漲 ({pct:+.1f}%) +10")
-        return 10
+        notes.append(f"甜蜜起漲 ({pct:+.1f}%) +25  ★ 實證勝率最高")
+        return 25
     if 3.0 < pct <= 5.0:
-        notes.append(f"穩健起漲 ({pct:+.1f}%) +7")
-        return 7
+        notes.append(f"穩健起漲 ({pct:+.1f}%) +15")
+        return 15
     if 0 < pct < 1.0:
-        return 3
+        notes.append(f"小漲 ({pct:+.1f}%) +6")
+        return 6
     return 0
 
 
