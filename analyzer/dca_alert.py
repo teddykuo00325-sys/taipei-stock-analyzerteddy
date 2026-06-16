@@ -1,11 +1,11 @@
 """長期 DCA 撿便宜警示 — 針對 0050 / 2330 等核心持股.
 
 理念：使用者長期持有 0050 / 2330，但在跌深時加碼比平均成本買法 IRR 更高。
-本模組提供 3 層警示，從常見到極端：
+本模組提供 3 層警示（敏感版 2%/5%/10%）：
 
-  🟢 SMALL — 月頻：20 日高點回檔 ≥ 3% AND RSI < 50
-  🟡 MEDIUM — 季頻：60 日高點回檔 ≥ 7% AND 跌破 MA60
-  🔴 LARGE — 年頻：252 日高點回檔 ≥ 15% AND RSI < 30 AND 跌破 MA200
+  🟢 SMALL — 月頻：20 日高點回檔 ≥ 2% AND RSI < 50
+  🟡 MEDIUM — 季頻：60 日高點回檔 ≥ 5% AND 跌破 MA60
+  🔴 LARGE — 年頻：252 日高點回檔 ≥ 10% AND RSI < 30 AND 跌破 MA200
 
 對外 API:
   evaluate(code) -> AlertResult | None
@@ -90,7 +90,7 @@ def evaluate(code: str) -> AlertResult | None:
     suggestion = ""
 
     # === LARGE：年頻（黑天鵝級）===
-    if (pb_252 <= -15 and (rsi is None or rsi < 30)
+    if (pb_252 <= -10 and (rsi is None or rsi < 30)
             and ma200 and close < ma200):
         level = "LARGE"
         emoji = "🔴"
@@ -100,7 +100,7 @@ def evaluate(code: str) -> AlertResult | None:
         suggestion = "建議重押加碼（50%+ 月閒置資金或加重資產配置）"
 
     # === MEDIUM：季頻 ===
-    elif pb_60 <= -7 and ma60 and close < ma60:
+    elif pb_60 <= -5 and ma60 and close < ma60:
         level = "MEDIUM"
         emoji = "🟡"
         note = (f"<b>{emoji} {name} 中型撿便宜（季頻）</b>\n"
@@ -110,7 +110,7 @@ def evaluate(code: str) -> AlertResult | None:
         suggestion = "建議中度加碼（20-30% 月閒置資金）"
 
     # === SMALL：月頻 ===
-    elif pb_20 <= -3 and rsi is not None and rsi < 50:
+    elif pb_20 <= -2 and rsi is not None and rsi < 50:
         level = "SMALL"
         emoji = "🟢"
         note = (f"<b>{emoji} {name} 小型撿便宜（月頻）</b>\n"
