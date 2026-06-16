@@ -18,7 +18,7 @@ from dataclasses import dataclass
 import pandas as pd
 
 # 預設追蹤標的（你的核心持股）
-DEFAULT_TARGETS = ["0050", "2330"]
+DEFAULT_TARGETS = ["0050", "2330", "00981A"]
 
 
 @dataclass
@@ -39,26 +39,53 @@ class AlertResult:
 
 
 def _safe_name(code: str) -> str:
-    """從 industry 抓中文名；fallback 用 code."""
+    """從 industry / etf 抓中文名；fallback 用 code."""
+    # 1. industry (一般上市 / 上櫃)
     try:
         from . import industry as _ind
         df = _ind.snapshot()
         if not df.empty:
             row = df[df["code"].astype(str) == str(code)]
             if not row.empty:
-                return str(row.iloc[0]["short_name"])
+                nm = str(row.iloc[0]["short_name"]).strip()
+                if nm:
+                    return nm
+    except Exception:
+        pass
+    # 2. ETF 從 etf_aum 表抓（主動式 ETF 不在 industry 表中）
+    try:
+        from . import etf as _etf
+        with _etf._db_lock, _etf._conn() as c:
+            r = c.execute(
+                "SELECT name FROM etf_aum WHERE code=? "
+                "ORDER BY date DESC LIMIT 1",
+                (str(code),),
+            ).fetchone()
+        if r and r[0]:
+            return str(r[0])
     except Exception:
         pass
     return code
 
 
 def evaluate(code: str) -> AlertResult | None:
-    """評估單一標的的撿便宜訊號等級."""
+    """評估單一標的的撿便宜訊號等級.
+
+    若 price_cache 沒該 code 的資料，自動 fetch 1y 進快取（給 ETF 等
+    universe 沒涵蓋的標的）。
+    """
     from . import indicators, price_cache
+    df_raw = None
     try:
         df_raw = price_cache._load(code)
     except Exception:
-        return None
+        pass
+    # 沒資料時用 get() 自動 fetch
+    if df_raw is None or df_raw.empty or len(df_raw) < 60:
+        try:
+            df_raw = price_cache.get(code, period="1y")
+        except Exception:
+            return None
     if df_raw is None or df_raw.empty or len(df_raw) < 60:
         return None
 
