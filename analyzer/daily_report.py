@@ -237,9 +237,16 @@ def build_daily_report(top_n: int = 5,
         sect = _section_etf_changes()
         if sect:
             parts.append(sect)
+    # 偵測執行環境：GitHub Actions 設 GITHUB_ACTIONS=true
+    import os as _os
+    is_cloud = (_os.environ.get("GITHUB_ACTIONS") == "true"
+                or _os.environ.get("STREAMLIT_RUNTIME_ENV") == "cloud"
+                or "/mount/src" in __file__.replace("\\", "/"))
+    source_tag = "<i>☁️ 雲端推送</i>\n" if is_cloud else ""
     parts.append(
         "\n━━━━━━━━━━━━━━━━━━━\n"
-        "<i>by Teddy 中央印製廠_台北股市分析器</i>\n\n"
+        + source_tag
+        + "<i>by Teddy 中央印製廠_台北股市分析器</i>\n\n"
         + DISCLAIMER
     )
     return "\n".join(parts)
