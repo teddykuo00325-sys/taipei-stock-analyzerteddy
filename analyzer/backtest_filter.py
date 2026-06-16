@@ -47,7 +47,10 @@ REGIME_BULL_GAP = 3.0           # MA20 > MA60 × 1.03 為強多頭
 REGIME_BEAR_GAP = -3.0          # MA20 < MA60 × 0.97 為強空頭
 
 
+import threading as _threading
+
 _regime_cache: dict = {}  # key=as_of_date or '' → {"t":ts, "v":MarketRegime}
+_regime_lock = _threading.Lock()  # 防 detect_regime 多執行緒 race
 _REGIME_TTL = 1800  # 30 分鐘
 
 
@@ -60,12 +63,14 @@ def detect_regime(as_of_date: str | None = None) -> MarketRegime:
     from time import time as _t
     cache_key = as_of_date or ""
     now = _t()
-    cached = _regime_cache.get(cache_key)
-    if cached and now - cached["t"] < _REGIME_TTL:
-        return cached["v"]
+    with _regime_lock:
+        cached = _regime_cache.get(cache_key)
+        if cached and now - cached["t"] < _REGIME_TTL:
+            return cached["v"]
 
     def _ret(r: "MarketRegime") -> "MarketRegime":
-        _regime_cache[cache_key] = {"t": now, "v": r}
+        with _regime_lock:
+            _regime_cache[cache_key] = {"t": now, "v": r}
         return r
 
     try:

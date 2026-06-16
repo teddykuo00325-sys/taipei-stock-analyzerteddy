@@ -310,13 +310,14 @@ def compute(df: pd.DataFrame, diag,
     # baseline maxes: A=10, B=20, C=8, D=20, E=8, F=25, G=10
     base = {"A": 10, "B": 20, "C": 8, "D": 20,
             "E": 8, "F": 25, "G": 10}
-    a = int(round(a_raw * w["A_max"] / base["A"])) if a_raw else 0
-    b = int(round(b_raw * w["B_max"] / base["B"])) if b_raw else 0
-    c = int(round(c_raw * w["C_max"] / base["C"])) if c_raw else 0
-    d = int(round(d_raw * w["D_max"] / base["D"])) if d_raw else 0
-    e = int(round(e_raw * w["E_max"] / base["E"])) if e_raw else 0
-    f = int(round(f_raw * w["F_max"] / base["F"])) if f_raw else 0
-    g = int(round(g_raw * w["G_max"] / base["G"])) if g_raw else 0
+    # 用 .get(key, 1) 防衛除以零（若未來改 base 漏 key 也不會炸）
+    a = int(round(a_raw * w.get("A_max", 0) / base.get("A", 1))) if a_raw else 0
+    b = int(round(b_raw * w.get("B_max", 0) / base.get("B", 1))) if b_raw else 0
+    c = int(round(c_raw * w.get("C_max", 0) / base.get("C", 1))) if c_raw else 0
+    d = int(round(d_raw * w.get("D_max", 0) / base.get("D", 1))) if d_raw else 0
+    e = int(round(e_raw * w.get("E_max", 0) / base.get("E", 1))) if e_raw else 0
+    f = int(round(f_raw * w.get("F_max", 0) / base.get("F", 1))) if f_raw else 0
+    g = int(round(g_raw * w.get("G_max", 0) / base.get("G", 1))) if g_raw else 0
     penalty = _compute_penalty(df, diag, notes)
     total = a + b + c + d + e + f + g + penalty
     if regime != "sideways":
