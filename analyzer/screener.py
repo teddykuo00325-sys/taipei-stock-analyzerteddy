@@ -66,6 +66,10 @@ def _score_one(code: str, name: str, df: pd.DataFrame,
             "均線": d.ma_state,
             "量價": vol_brief,
             "波浪": d.wave_label,
+            "葛蘭碧": (f"#{d.granville.last_signal.rule} "
+                       f"{d.granville.last_signal.name}"
+                       if (getattr(d, "granville", None) and
+                           d.granville.last_signal) else "—"),
             "KD": f"{last['k']:.0f}/{last['d']:.0f}",
             "RSI": round(float(last["rsi"]), 1),
             "法人(張)": inst_brief,
