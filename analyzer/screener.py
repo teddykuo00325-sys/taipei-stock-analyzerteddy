@@ -130,17 +130,21 @@ def _score_one_at_date(code: str, name: str, df_full: pd.DataFrame,
     """歷史回測版 _score_one：把 df 截斷到 as_of_date 之前再評分.
 
     跳過 chip 資料（institutional / margin / shareholders 都是 current-only）。
+    Tiebreak 用 as_of_date 當下的 regime（避免回測 2025 空頭卻套今天多頭權重）。
     """
     try:
         cutoff = pd.Timestamp(as_of_date)
         df = df_full[df_full.index <= cutoff]
         if len(df) < 60:
             return None
+        # 確認 as_of_date 當天附近 ±3 日內有交易（否則該股當時可能未上市/停牌）
+        recent_dates = df.index[-5:]
+        if (cutoff - recent_dates[-1]).days > 7:
+            return None  # 最近一筆距 as_of_date 超過一週 → 該日無效
         avg_vol = float(df["volume"].tail(20).mean())
         if avg_vol < min_avg_volume_lots * 1000:
             return None
         dff = indicators.add_all(df)
-        # 歷史回測：跳過所有 chip 資料（無歷史快照可用）
         d = diagnosis.diagnose(dff, code=code,
                                include_chips=False, detailed=False)
         last = dff.iloc[-1]
@@ -165,10 +169,22 @@ def _score_one_at_date(code: str, name: str, df_full: pd.DataFrame,
                            d.granville.last_signal) else "—"),
             "目標價": round(d.target_price, 2) if d.target_price else None,
             "短線停損": round(d.short_stop, 2) if d.short_stop else None,
-            "Tiebreak": _compute_tiebreak(dff, d),
+            # 關鍵：tiebreak 用 as_of_date 當下 regime（不是今天）
+            "Tiebreak": _compute_tiebreak_at(dff, d, as_of_date),
         }
     except Exception:
         return None
+
+
+def _compute_tiebreak_at(df, diag, as_of_date: str) -> int:
+    """歷史回測版 tiebreak — 用 as_of_date 當下的 regime."""
+    try:
+        from . import tiebreaker, backtest_filter
+        regime = backtest_filter.detect_regime(
+            as_of_date=as_of_date).label
+        return tiebreaker.compute(df, diag, regime=regime).total
+    except Exception:
+        return 0
 
 
 def screen_historical(
@@ -185,29 +201,51 @@ def screen_historical(
     回傳結構同 screen()，但無 _diag/_df_tail（簡化）。
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
-    from . import universe as _u
     from . import industry as _ind
 
-    snap = _u.snapshot()
-    if pre_filter_lots_today > 0:
-        snap = snap[snap["TradeVolume"] >= pre_filter_lots_today * 1000]
-    snap = snap.sort_values("TradeVolume", ascending=False) \
-               .reset_index(drop=True)
+    # ★ 關鍵修正：不用 universe.snapshot()（那是今天的）
+    # 改從 ohlcv 表查「as_of_date 之前最後一個交易日」每檔的交易量
+    # 並擋掉 as_of_date 當下未上市 / 停牌的股票
+    with price_cache._lock, price_cache._conn() as c:
+        # 每個 code 取 as_of_date 之前最近 20 日的均量
+        rows = c.execute("""
+            SELECT code, AVG(volume) as avg_vol, COUNT(*) as n,
+                   MAX(date) as last_dt
+            FROM ohlcv
+            WHERE date <= ? AND date >= date(?, '-40 days')
+            GROUP BY code
+            HAVING COUNT(*) >= 15 AND AVG(volume) >= ?
+                   AND MAX(date) >= date(?, '-7 days')
+        """, (as_of_date, as_of_date,
+              pre_filter_lots_today * 1000, as_of_date)).fetchall()
+    if not rows:
+        return {"long": pd.DataFrame(), "short": pd.DataFrame(),
+                "full": pd.DataFrame(),
+                "total": 0, "passed": 0,
+                "as_of_date": as_of_date,
+                "industry_map": {}}
+    # 排序：as_of_date 當下日均量 desc
+    rows.sort(key=lambda r: r[1], reverse=True)
     if limit:
-        snap = snap.head(limit)
-    codes = snap["Code"].tolist()
-    names = dict(zip(snap["Code"], snap["Name"]))
-    # 一次拉產業 map 給 filter 用
+        rows = rows[:limit]
+    codes = [r[0] for r in rows]
+    # 一次拉 industry（給 names + industry_map 兩用）
+    names: dict = {}
+    industry_map: dict = {}
     try:
         ind_df = _ind.snapshot()
         if not ind_df.empty:
+            name_map = dict(zip(ind_df["code"].astype(str),
+                                 ind_df["short_name"].astype(str)))
             industry_map = dict(zip(
                 ind_df["code"].astype(str),
                 ind_df["industry"].fillna("未分類").astype(str)))
-        else:
-            industry_map = {}
+            for c in codes:
+                names[c] = name_map.get(c, c)
     except Exception:
-        industry_map = {}
+        pass
+    if not names:
+        names = {c: c for c in codes}
     total = len(codes)
 
     if progress_cb:
