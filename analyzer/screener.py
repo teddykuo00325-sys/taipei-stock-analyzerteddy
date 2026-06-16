@@ -86,9 +86,20 @@ def _score_one(code: str, name: str, df: pd.DataFrame,
                 d.entry_zone and d.entry_zone[0] <= float(last["close"])
                 <= d.entry_zone[1]
             ),
+            # tiebreaker 分數（同分時 3 天勝率排序用）
+            "Tiebreak": _compute_tiebreak(dff, d),
         }
     except Exception:
         return None
+
+
+def _compute_tiebreak(df, diag) -> int:
+    """計算多方 tiebreak（screener 主要用 long-side ranking）."""
+    try:
+        from . import tiebreaker
+        return tiebreaker.compute(df, diag).total
+    except Exception:
+        return 0
 
 
 def _fetch_batch(tickers: list[str], period: str) -> pd.DataFrame | None:
@@ -154,6 +165,7 @@ def _score_one_at_date(code: str, name: str, df_full: pd.DataFrame,
                            d.granville.last_signal) else "—"),
             "目標價": round(d.target_price, 2) if d.target_price else None,
             "短線停損": round(d.short_stop, 2) if d.short_stop else None,
+            "Tiebreak": _compute_tiebreak(dff, d),
         }
     except Exception:
         return None
@@ -240,8 +252,15 @@ def screen_historical(
                 "total": total, "passed": 0,
                 "as_of_date": as_of_date,
                 "industry_map": industry_map}
-    long_top = full_df.nlargest(top_n, "分數").reset_index(drop=True)
-    short_top = full_df.nsmallest(top_n, "分數").reset_index(drop=True)
+    # 歷史回測也用 Tiebreak 排序（同分用 3 天勝率代理指標）
+    if "Tiebreak" not in full_df.columns:
+        full_df["Tiebreak"] = 0
+    long_top = full_df.sort_values(
+        by=["分數", "Tiebreak"], ascending=[False, False]
+    ).head(top_n).reset_index(drop=True)
+    short_top = full_df.sort_values(
+        by=["分數", "Tiebreak"], ascending=[True, True]
+    ).head(top_n).reset_index(drop=True)
     return {
         "long": long_top, "short": short_top, "full": full_df,
         "total": total, "passed": len(full_df),
@@ -347,8 +366,15 @@ def screen(
         return {"long": full_df, "short": full_df, "full": full_df,
                 "total": total, "passed": 0,
                 "industry_map": industry_map}
-    long_top = full_df.nlargest(top_n, "分數").reset_index(drop=True)
-    short_top = full_df.nsmallest(top_n, "分數").reset_index(drop=True)
+    # 兩級排序：主分數先比，同分時用 Tiebreak（3 天勝率代理指標）
+    if "Tiebreak" not in full_df.columns:
+        full_df["Tiebreak"] = 0
+    long_top = full_df.sort_values(
+        by=["分數", "Tiebreak"], ascending=[False, False]
+    ).head(top_n).reset_index(drop=True)
+    short_top = full_df.sort_values(
+        by=["分數", "Tiebreak"], ascending=[True, True]
+    ).head(top_n).reset_index(drop=True)
     return {
         "long": long_top, "short": short_top, "full": full_df,
         "total": total, "passed": len(full_df),
