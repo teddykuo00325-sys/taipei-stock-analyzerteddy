@@ -39,16 +39,17 @@ class AlertResult:
 
 
 def _safe_name(code: str) -> str:
-    """從 industry / etf 抓中文名；fallback 用 code."""
+    """從 industry / etf / 硬編碼 抓中文名；fallback 用 code."""
+    code = str(code).strip()
     # 1. industry (一般上市 / 上櫃)
     try:
         from . import industry as _ind
         df = _ind.snapshot()
         if not df.empty:
-            row = df[df["code"].astype(str) == str(code)]
+            row = df[df["code"].astype(str) == code]
             if not row.empty:
                 nm = str(row.iloc[0]["short_name"]).strip()
-                if nm:
+                if nm and nm != code:
                     return nm
     except Exception:
         pass
@@ -59,10 +60,19 @@ def _safe_name(code: str) -> str:
             r = c.execute(
                 "SELECT name FROM etf_aum WHERE code=? "
                 "ORDER BY date DESC LIMIT 1",
-                (str(code),),
+                (code,),
             ).fetchone()
         if r and r[0]:
-            return str(r[0])
+            nm = str(r[0]).strip()
+            if nm and nm != code:
+                return nm
+    except Exception:
+        pass
+    # 3. 硬編碼 ETF（GH Actions 上 industry + etf_aum 都失敗時的最後保險）
+    try:
+        from .daily_report import _HARDCODED_NAMES
+        if code in _HARDCODED_NAMES:
+            return _HARDCODED_NAMES[code]
     except Exception:
         pass
     return code
