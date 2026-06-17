@@ -1,27 +1,26 @@
 name: Daily Telegram Report (08:30 Taipei)
 
-# GitHub Actions cron 嚴重延遲問題（可能 4-6 小時），所以排多個時點搶
-# 同時靠 send_daily_report 內部「今日已發送」去重，只會 TG 一次。
-# 排程點（UTC = +8 後是台北）：
-#   00:30 UTC = 08:30  ← 主要排程，最理想時間
-#   00:45 UTC = 08:45  ← +15min backup
-#   01:00 UTC = 09:00  ← +30min backup
-#   01:30 UTC = 09:30  ← 最終 fallback
+# 主要靠 cron-job.org 在 08:30 (台北) 觸發 workflow_dispatch（準時 ±1 分鐘）
+# GH 內建 cron 嚴重延遲（4-6 小時），只設一個當 fallback；
+# concurrency 保證同時只有一個 run，避免重複推送
 on:
   schedule:
-    - cron: '30 0 * * *'
-    - cron: '45 0 * * *'
-    - cron: '0 1 * * *'
-    - cron: '30 1 * * *'
-  workflow_dispatch:        # 允許手動 trigger 測試
+    - cron: '30 1 * * *'      # 01:30 UTC = 09:30 台北（fallback only）
+  workflow_dispatch:           # cron-job.org 跟手動觸發都走這
+
+# 同名 workflow 同時最多一個 run；後到的會被取消
+concurrency:
+  group: daily-tg-report
+  cancel-in-progress: false   # 已在跑的不打斷，新到的直接 skip
 
 permissions:
   contents: read
+  actions: read                # 為了 dedupe 查 runs API
 
 jobs:
   send:
     runs-on: ubuntu-latest
-    timeout-minutes: 15     # 跑完整選股約 3-5 分鐘
+    timeout-minutes: 15
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -43,7 +42,6 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          # 讓 marketdata / industry / universe 用 yfinance / TWSE 抓即時資料
           PYTHONIOENCODING: utf-8
         run: |
           python scripts/send_daily_report.py

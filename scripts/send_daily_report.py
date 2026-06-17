@@ -53,39 +53,53 @@ def _already_sent_today() -> bool:
 
 
 def _check_gh_runs_today() -> bool:
-    """查 GitHub Actions 今日是否已有此 workflow 成功跑（且推送成功）.
+    """查 GitHub Actions 今日是否已有此 workflow run（任何狀態，含 in_progress）.
 
-    透過 repo runs API 不需 PAT（public repo）。
-    回 True 表示今日已成功跑過，可以跳過。
+    回 True → 跳過此次 run，避免重複推送。
+    抓所有狀態（success / in_progress / queued / failure），因為：
+      - 兩個 cron 同時被 release 時都是 in_progress，要彼此看得到對方
+      - 已 success 的 run 也要當作「今天已推過」
+      - failure 的也算（避免失敗後又一直 retry）
     """
     try:
-        # 從 $GITHUB_REPOSITORY (GH Actions 內建) 取 owner/repo
         repo = os.environ.get("GITHUB_REPOSITORY")
         wf_id = os.environ.get("GITHUB_WORKFLOW_REF", "").split("@")[0]
         wf_name = wf_id.split("/")[-1] if wf_id else "daily-tg-report.yml"
+        current_run_id = os.environ.get("GITHUB_RUN_ID")
         if not repo:
             return False
+        # ★ 不再加 ?status=success — 抓所有狀態
         url = (f"https://api.github.com/repos/{repo}/actions/workflows/"
-               f"{wf_name}/runs?status=success&per_page=10")
+               f"{wf_name}/runs?per_page=20")
         r = requests.get(url, timeout=10,
                           headers={"Accept": "application/vnd.github+json"})
         if r.status_code != 200:
             return False
         today_tpe = datetime.now(TPE_TZ).date()
         for run in r.json().get("workflow_runs", []):
-            # run_started_at 是 UTC ISO timestamp
+            run_id = str(run.get("id"))
+            # 排除自己
+            if current_run_id and run_id == current_run_id:
+                continue
             ts = run.get("run_started_at", "")
             try:
                 dt_utc = datetime.fromisoformat(ts.replace("Z", "+00:00"))
                 dt_tpe = dt_utc.astimezone(TPE_TZ)
-                if dt_tpe.date() == today_tpe:
-                    # 排除「正在跑的自己」這次 run（current run 不算）
-                    current_run_id = os.environ.get("GITHUB_RUN_ID")
-                    if current_run_id and str(run.get("id")) == current_run_id:
-                        continue
-                    return True
             except Exception:
                 continue
+            if dt_tpe.date() != today_tpe:
+                continue
+            status = run.get("status", "")
+            concl = run.get("conclusion", "")
+            # success / in_progress / queued 一律 skip
+            # failure / cancelled 不算（讓重試有機會）
+            if status in ("completed",):
+                if concl == "success":
+                    return True
+                # failure / cancelled / timed_out → 不擋
+            elif status in ("in_progress", "queued", "waiting", "pending"):
+                # 已有別人在跑，跳過
+                return True
         return False
     except Exception:
         return False
