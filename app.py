@@ -281,6 +281,16 @@ def render_card(row: pd.Series, rank: int, key_ns: str = "card"):
     d = row["_diag"]
     df = row["_df_tail"]
     code = str(row["代號"])
+    # 名稱 fallback：若 row['名稱'] = code（雲端 universe.snapshot 失敗時），
+    # 再嘗試從 industry.snapshot() 補抓（會走 industry.db DB fallback）
+    _row_name = str(row.get("名稱", code)).strip()
+    if _row_name == code or not _row_name:
+        try:
+            _info = industry.info_for(code)
+            if _info and _info.get("short_name"):
+                _row_name = str(_info["short_name"])
+        except Exception:
+            pass
     score_icon = "🔴" if d.score > 0 else "🟢" if d.score < 0 else "⚪"
     chg_sign = "+" if row["漲跌%"] >= 0 else ""
     chg_color = ("#e55353" if row["漲跌%"] > 0
@@ -362,42 +372,34 @@ def render_card(row: pd.Series, rank: int, key_ns: str = "card"):
                      f" <span style='color:#999; font-size:12px;'>{hint}</span>")
 
     with st.container(border=True):
-        # === 頂部 header (代號 名稱 tag + 現價 漲跌 + 分數建議) ===
-        st.markdown(
-            f"""
-            <div style='line-height:1.35;'>
-              <div style='font-size:13px;'>
-                <b style='color:#fafafa; font-size:15px;'>
-                  #{rank} {row['名稱']} ({code})
-                </b>
-                {cont}{ind_tag}
-                <span style='color:#666; margin-left:8px; font-size:11px;'>
-                  🕒 {now_str}</span>
-                {rev_text}
-              </div>
-              <div style='margin:4px 0; display:flex;
-                          align-items:baseline; gap:10px;'>
-                <span style='font-size:11px; color:#999;'>現價</span>
-                <span style='font-size:26px; font-weight:800; color:{chg_color};
-                             letter-spacing:-0.5px;'>
-                  {row['收盤']:.2f}
-                </span>
-                <span style='font-size:15px; font-weight:700; color:{chg_color};'>
-                  {chg_sign}{row['漲跌%']:.2f}%
-                </span>
-                <span style='font-size:13px; color:#888; margin-left:8px;'>
-                  {score_icon} <b>{d.score:+d}</b> · {d.stance}
-                </span>
-                <span style='font-size:13px; margin-left:8px;'>
-                  {ACTION_ICONS.get(d.action, '')} <b>{d.action}</b>
-                </span>
-                <span style='margin-left:8px;'>{entry_str}</span>
-              </div>
-              {pattern_banner}
-            </div>
-            """,
-            unsafe_allow_html=True,
+        # === 頂部 header — 整段壓成單行 HTML，避免 markdown 解析錯位 ===
+        time_tag = (f"<span style='color:#666;margin-left:8px;"
+                    f"font-size:11px;'>🕒 {now_str}</span>")
+        header_line = (
+            f"<div style='line-height:1.35;'>"
+            f"<div style='font-size:13px;'>"
+            f"<b style='color:#fafafa;font-size:15px;'>"
+            f"#{rank} {_row_name} ({code})</b>"
+            f"{cont}{ind_tag}{time_tag}{rev_text}"
+            f"</div>"
+            f"<div style='margin:4px 0;display:flex;"
+            f"align-items:baseline;gap:10px;'>"
+            f"<span style='font-size:11px;color:#999;'>現價</span>"
+            f"<span style='font-size:26px;font-weight:800;"
+            f"color:{chg_color};letter-spacing:-0.5px;'>"
+            f"{row['收盤']:.2f}</span>"
+            f"<span style='font-size:15px;font-weight:700;"
+            f"color:{chg_color};'>{chg_sign}{row['漲跌%']:.2f}%</span>"
+            f"<span style='font-size:13px;color:#888;margin-left:8px;'>"
+            f"{score_icon} <b>{d.score:+d}</b> · {d.stance}</span>"
+            f"<span style='font-size:13px;margin-left:8px;'>"
+            f"{ACTION_ICONS.get(d.action, '')} <b>{d.action}</b></span>"
+            f"<span style='margin-left:8px;'>{entry_str}</span>"
+            f"</div>"
+            f"{pattern_banner}"
+            f"</div>"
         )
+        st.markdown(header_line, unsafe_allow_html=True)
 
         # === 中型 K-chart（K + Vol + KD 三副圖）===
         # diag 已算好 multi_supports/resistances，直接用
