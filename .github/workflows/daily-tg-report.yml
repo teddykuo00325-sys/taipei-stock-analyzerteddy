@@ -1,17 +1,10 @@
 name: Daily Telegram Report (08:30 Taipei)
 
-# 主要靠 cron-job.org 在 08:30 (台北) 觸發 workflow_dispatch（準時 ±1 分鐘）
-# GH 內建 cron 嚴重延遲（4-6 小時），只設一個當 fallback；
-# concurrency 保證同時只有一個 run，避免重複推送
+# 唯一觸發來源：cron-job.org 在 08:30 (台北) 透過 GitHub API workflow_dispatch
+# GH 內建 schedule 嚴重延遲 4-6 小時，已移除避免重複推送
+# 重複推送防護：scripts/send_daily_report.py _check_gh_runs_today() 查今日 runs
 on:
-  schedule:
-    - cron: '30 1 * * *'      # 01:30 UTC = 09:30 台北（fallback only）
-  workflow_dispatch:           # cron-job.org 跟手動觸發都走這
-
-# 同名 workflow 同時最多一個 run；後到的會被取消
-concurrency:
-  group: daily-tg-report
-  cancel-in-progress: false   # 已在跑的不打斷，新到的直接 skip
+  workflow_dispatch:
 
 permissions:
   contents: read
