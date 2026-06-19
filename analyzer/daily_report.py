@@ -312,6 +312,48 @@ def _section_picks(top_n: int = 5) -> str:
     return "\n".join(lines)
 
 
+def _section_capital_allocation() -> str:
+    """資金配置建議 — 依當前 regime + Lv4 capital_scale + 推薦檔數.
+
+    依賴 _LAST_PICKS 緩存（_section_picks 跑過後才有資料）。
+    僅 **私人版本** 推送顯示，不走公開 channel。
+    """
+    if not (_LAST_PICKS.get("long_proceed") or _LAST_PICKS.get("short_proceed")):
+        return ""
+    try:
+        r = backtest_filter.detect_regime()
+    except Exception:
+        return ""
+    base_capital = 1_000_000  # 假設帳戶 100 萬
+    lines = [f"\n💵 <b>資金配置建議</b>（依當前 regime 動態）"]
+    lines.append(f"   大盤：{r.label_zh}　基準資金 100 萬")
+
+    for side, zh, emoji in (("long", "做多", "🚀"), ("short", "做空", "🐻")):
+        proceed = _LAST_PICKS.get(f"{side}_proceed")
+        scale = _LAST_PICKS.get(f"{side}_capital_scale", 1.0) or 0.0
+        n_picks = len(_LAST_PICKS.get(side) or [])
+        hd = _LAST_PICKS.get(f"{side}_hold_days", 5)
+        if not proceed or n_picks == 0 or scale <= 0:
+            lines.append(f"   {emoji} {zh}：<b>0%</b>（跳過此方向）")
+            continue
+        side_capital = base_capital * scale
+        per_stock = side_capital / n_picks
+        lines.append(
+            f"   {emoji} {zh}：<b>{scale*100:.0f}%</b> = "
+            f"<b>{side_capital/10000:.0f} 萬</b> ｜ "
+            f"{n_picks} 檔 → 每檔 <b>{per_stock/10000:.1f} 萬</b> ｜ "
+            f"持有 {hd} 日"
+        )
+    # 整理判斷
+    if r.label == "sideways":
+        lines.append("   <i>📌 整理盤建議減倉至 50%，多空對沖降風險</i>")
+    elif r.label == "bull":
+        lines.append("   <i>📌 強多頭可全押多單，空單嚴格停損</i>")
+    else:
+        lines.append("   <i>📌 強空頭可全押空單，多單嚴格停損</i>")
+    return "\n".join(lines)
+
+
 def _section_track_record() -> str:
     """系統累積績效 — 7 / 30 日 / all-time，僅看 TG 自動 lock 的 closed sessions."""
     rows = []
@@ -434,7 +476,9 @@ def build_daily_report(top_n: int = 5,
               可選: ['regime', 'picks', 'backtest', 'etf']
     """
     if sections is None:
-        sections = ["track_record", "regime", "dca", "us_market", "commodities",
+        # ★ 公開版（送 channel）：不含 track_record / capital_allocation
+        # 這兩段只送給「TELEGRAM_CHAT_ID_PRIVATE」個人 chat（見 send_daily_report）
+        sections = ["regime", "dca", "us_market", "commodities",
                     "picks", "backtest", "etf"]
     now = _now_tpe()
     weekday_zh = "一二三四五六日"[now.weekday()]
@@ -445,6 +489,10 @@ def build_daily_report(top_n: int = 5,
     ]
     if "track_record" in sections:
         parts.append(_section_track_record())
+    if "capital_allocation" in sections:
+        sect = _section_capital_allocation()
+        if sect:
+            parts.append(sect)
     if "regime" in sections:
         parts.append(_section_regime())
     if "dca" in sections:
@@ -515,6 +563,30 @@ def _auto_lock_today_picks(top_n: int) -> list[str]:
     return msgs
 
 
+def build_private_addendum() -> str:
+    """組合「私人加值資訊」訊息 — Track Record + 資金配置.
+
+    這份訊息只送 TELEGRAM_CHAT_ID_PRIVATE，不走公開 channel。
+    依賴 _LAST_PICKS 已被 _section_picks 填充（呼叫前需先 build_daily_report）。
+    """
+    now = _now_tpe()
+    parts = [
+        f"🔒 <b>{now.strftime('%Y-%m-%d %H:%M')} 私人加值資訊</b>",
+        "━━━━━━━━━━━━━━━━━━━",
+    ]
+    tr = _section_track_record()
+    if tr:
+        parts.append(tr)
+    ca = _section_capital_allocation()
+    if ca:
+        parts.append(ca)
+    parts.append(
+        "\n━━━━━━━━━━━━━━━━━━━\n"
+        "<i>🔒 僅本人可見 ｜ 不送公開 channel</i>"
+    )
+    return "\n".join(parts)
+
+
 def send_daily_report(top_n: int = 5,
                        sections: list[str] | None = None,
                        auto_fetch_etf: bool = True,
@@ -524,7 +596,14 @@ def send_daily_report(top_n: int = 5,
     auto_fetch_etf: 發送前先自動抓主動式 ETF 最新持股（True=確保資料最新）。
     auto_track: True 時自動結算到期 session + lock 今日推薦進 realbacktest，
                用於累積 Track Record。
+
+    雙軌推送：
+      ◦ 公開 channel（TELEGRAM_CHAT_ID）：行情/regime/推薦/ETF/美股
+      ◦ 私人 chat（TELEGRAM_CHAT_ID_PRIVATE）：上面那份 + Track Record + 資金配置
+        若 TELEGRAM_CHAT_ID_PRIVATE 未設定，私人部分跳過。
     """
+    import os as _os
+
     # === Phase 2: 結算到期 sessions（在算 track record 之前） ===
     expired_log = []
     if auto_track:
@@ -542,10 +621,11 @@ def send_daily_report(top_n: int = 5,
         except Exception:
             pass
 
-    text = build_daily_report(top_n=top_n, sections=sections)
-    ok, msg = telegram_notify.send_long(text, parse_mode="HTML")
+    # 1) 公開版 → 預設 TELEGRAM_CHAT_ID（channel）
+    public_text = build_daily_report(top_n=top_n, sections=sections)
+    ok, msg = telegram_notify.send_long(public_text, parse_mode="HTML")
 
-    # === Phase 1: TG 推送成功 → 自動 lock 今日推薦 ===
+    # === Phase 1: 公開推送成功 → 自動 lock 今日推薦（須在私人 addendum 前） ===
     lock_log = []
     if ok and auto_track:
         try:
@@ -553,13 +633,37 @@ def send_daily_report(top_n: int = 5,
         except Exception as e:
             lock_log.append(f"auto_lock 失敗: {str(e)[:60]}")
 
-    # 把 auto_track 訊息附在回傳 msg 後面（給 send_daily_report.py log 看）
-    if expired_log or lock_log:
-        suffix_parts = []
-        if expired_log:
-            suffix_parts.append(f"結算 {len(expired_log)}: " + "; ".join(expired_log))
-        if lock_log:
-            suffix_parts.append(f"鎖入: " + "; ".join(lock_log))
+    # 2) 私人加值版 → 只送 TELEGRAM_CHAT_ID_PRIVATE
+    private_log = []
+    private_chat = _os.environ.get("TELEGRAM_CHAT_ID_PRIVATE", "").strip()
+    if not private_chat:
+        # 也可從 streamlit secrets 讀
+        try:
+            import streamlit as _st
+            private_chat = str(_st.secrets.get("telegram", {})
+                                .get("chat_id_private", "")).strip()
+        except Exception:
+            private_chat = ""
+    if ok and private_chat:
+        try:
+            addendum = build_private_addendum()
+            ok_p, msg_p = telegram_notify.send_long_to(
+                addendum, private_chat, parse_mode="HTML")
+            private_log.append(("✅" if ok_p else "❌") + f" 私人 → {msg_p}")
+        except Exception as e:
+            private_log.append(f"私人推送 EXC: {str(e)[:60]}")
+    elif not private_chat:
+        private_log.append("⏭️ 私人推送跳過（未設 TELEGRAM_CHAT_ID_PRIVATE）")
+
+    # 把 auto_track + 私人推送訊息附在回傳 msg 後面（給 GH Actions log 看）
+    suffix_parts = []
+    if expired_log:
+        suffix_parts.append(f"結算 {len(expired_log)}: " + "; ".join(expired_log))
+    if lock_log:
+        suffix_parts.append(f"鎖入: " + "; ".join(lock_log))
+    if private_log:
+        suffix_parts.append("; ".join(private_log))
+    if suffix_parts:
         msg = (msg or "") + " ｜ " + " ｜ ".join(suffix_parts)
 
     return ok, msg

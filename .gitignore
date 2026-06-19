@@ -21,6 +21,9 @@ data/*.db-shm
 # Streamlit 機密檔
 .streamlit/secrets.toml
 
+# 本機 TG 推送 batch（含 bot token 不上傳）
+每日推送TG.bat
+
 # IDE / OS
 .idea/
 .vscode/

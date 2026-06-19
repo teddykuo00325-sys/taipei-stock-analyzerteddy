@@ -37,6 +37,8 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # ★ 私人收件人 — Track Record + 資金配置只推到此 chat（不送 channel）
+          TELEGRAM_CHAT_ID_PRIVATE: ${{ secrets.TELEGRAM_CHAT_ID_PRIVATE }}
           PYTHONIOENCODING: utf-8
         run: |
           python scripts/send_daily_report.py

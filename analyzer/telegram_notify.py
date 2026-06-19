@@ -98,6 +98,71 @@ def send(text: str,
     return False, last_err or "全部失敗"
 
 
+def send_to(text: str,
+            chat_id: str,
+            parse_mode: str = "HTML",
+            disable_preview: bool = True,
+            silent: bool = False) -> tuple[bool, str]:
+    """指定單一 chat_id 發送（不走 _cfg 的廣播清單）.
+
+    用途：把私人資訊（如 Track Record / 資金配置）只送給特定收件人，
+    而非 channel 全體。chat_id 可為 numeric ID 或 @username.
+    """
+    c = _cfg()
+    if not c:
+        return False, "未設定 Telegram secrets"
+    if not chat_id:
+        return False, "chat_id 為空"
+    if len(text) > 4000:
+        text = text[:3950] + "\n\n…（內容過長，已截斷）"
+    url = f"https://api.telegram.org/bot{c['token']}/sendMessage"
+    try:
+        r = requests.post(url, json={
+            "chat_id": chat_id,
+            "text": text,
+            "parse_mode": parse_mode,
+            "disable_web_page_preview": disable_preview,
+            "disable_notification": silent,
+        }, timeout=15)
+        if r.status_code == 200:
+            return True, f"已發送 → {chat_id}"
+        return False, f"{chat_id}: HTTP {r.status_code} {r.text[:100]}"
+    except Exception as e:
+        return False, f"{chat_id}: {e}"
+
+
+def send_long_to(text: str, chat_id: str,
+                  chunk_size: int = 3800,
+                  parse_mode: str = "HTML") -> tuple[bool, str]:
+    """send_to 的長訊息版本（自動分段，<4000 chars/段）."""
+    if len(text) <= chunk_size:
+        return send_to(text, chat_id, parse_mode=parse_mode)
+    chunks: list[str] = []
+    buf = ""
+    for para in text.split("\n\n"):
+        if len(buf) + len(para) + 2 > chunk_size:
+            if buf:
+                chunks.append(buf)
+            buf = para
+        else:
+            buf = (buf + "\n\n" + para) if buf else para
+    if buf:
+        chunks.append(buf)
+    n_ok = 0
+    last_err = ""
+    for i, ch in enumerate(chunks):
+        prefix = f"<i>(第 {i+1}/{len(chunks)} 段)</i>\n" if len(chunks) > 1 else ""
+        ok, msg = send_to(prefix + ch, chat_id, parse_mode=parse_mode)
+        if ok:
+            n_ok += 1
+        else:
+            last_err = msg
+            break
+    if n_ok == len(chunks):
+        return True, f"已分段發送 {n_ok}/{len(chunks)} 段 → {chat_id}"
+    return False, f"私人推送第 {n_ok+1} 段失敗：{last_err}"
+
+
 def send_long(text: str, chunk_size: int = 3800,
               parse_mode: str = "HTML") -> tuple[bool, str]:
     """長訊息自動分段發送（每段 < 4000 chars）.
