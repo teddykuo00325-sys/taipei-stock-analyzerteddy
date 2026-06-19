@@ -14,7 +14,7 @@ from analyzer import (backtest_filter, broker, broker_history, chart,
                       margin_history, marketdata, moneyflow, price_cache,
                       realbacktest, revenue, schools, screener,
                       shareholders, storage, targets, telegram_notify,
-                      wave, watchlist)
+                      us_market, wave, watchlist)
 
 logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 
@@ -712,6 +712,54 @@ def render_market_sidebar():
                 continue
             st.markdown(f"**{k}**  \n`{v}`")
         st.caption("資料來源：gck99.com.tw（每 60 分鐘更新一次快取）")
+
+    # === 🇺🇸 美股關鍵指標 ===
+    with st.sidebar.expander("🇺🇸 美股關鍵指標", expanded=False):
+        try:
+            us = us_market.fetch_us_market()
+        except Exception as _e:
+            us = {}
+            st.caption(f"⚠️ 抓取失敗：{_e}")
+        if us and us.get("indices"):
+            st.caption(f"📅 {us.get('last_date','—')} 收盤")
+            for q in us["indices"]:
+                # VIX 反向標色
+                if q.symbol == "^VIX":
+                    delta_color = "inverse"
+                else:
+                    delta_color = "normal"
+                st.metric(
+                    f"{q.label}　{q.correlation}",
+                    f"{q.price:,.2f}",
+                    f"{q.change:+.2f} ({q.change_pct:+.2f}%)",
+                    delta_color=delta_color,
+                )
+            # 相關性 hint
+            corr = us.get("correlation", {})
+            if "sox_vs_2330_30d" in corr:
+                c_val = corr["sox_vs_2330_30d"]
+                interp = ("高度同步" if abs(c_val) > 0.7
+                          else "中度相關" if abs(c_val) > 0.4
+                          else "弱相關")
+                st.caption(
+                    f"📌 費半 vs 台積電 30 日相關 "
+                    f"**{c_val:+.2f}**（{interp}）"
+                )
+
+            # 巨頭折疊顯示
+            if us.get("giants"):
+                st.markdown("**🦾 美股巨頭**")
+                for q in us["giants"]:
+                    arrow = "🔴" if q.change_pct >= 0 else "🟢"
+                    star = " ⭐" if abs(q.change_pct) >= 1.5 else ""
+                    st.markdown(
+                        f"{arrow} {q.icon} **{q.label}**　"
+                        f"`${q.price:,.2f}`　"
+                        f"<span style='color:#888;'>"
+                        f"({q.change_pct:+.2f}%){star}　{q.correlation}"
+                        f"</span>",
+                        unsafe_allow_html=True,
+                    )
 
     # === 📨 Telegram 每日報告 ===
     if telegram_notify.is_configured():
