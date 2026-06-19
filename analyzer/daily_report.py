@@ -242,6 +242,15 @@ def _resolve_name(code: str, fallback_name: str) -> str:
     return code
 
 
+# 模組級快取：_section_picks 算完的 picks，供 send_daily_report 之後 auto-lock
+_LAST_PICKS: dict = {
+    "long": [], "short": [],
+    "long_hold_days": 5, "short_hold_days": 5,
+    "long_capital_scale": 1.0, "short_capital_scale": 1.0,
+    "long_proceed": False, "short_proceed": False,
+}
+
+
 def _section_picks(top_n: int = 5) -> str:
     """跑當前選股，列出 long / short top N."""
     try:
@@ -263,6 +272,18 @@ def _section_picks(top_n: int = 5) -> str:
         "long", long_raw, industry_map=ind_map)
     rep_s = backtest_filter.apply_all_filters(
         "short", short_raw, industry_map=ind_map)
+
+    # 緩存到模組級供之後 auto-lock 使用
+    _LAST_PICKS["long"] = (
+        list(rep_l.picks_filtered[:top_n]) if rep_l.proceed else [])
+    _LAST_PICKS["short"] = (
+        list(rep_s.picks_filtered[:top_n]) if rep_s.proceed else [])
+    _LAST_PICKS["long_hold_days"] = rep_l.hold_days or 5
+    _LAST_PICKS["short_hold_days"] = rep_s.hold_days or 5
+    _LAST_PICKS["long_capital_scale"] = rep_l.capital_scale or 1.0
+    _LAST_PICKS["short_capital_scale"] = rep_s.capital_scale or 1.0
+    _LAST_PICKS["long_proceed"] = rep_l.proceed
+    _LAST_PICKS["short_proceed"] = rep_s.proceed
 
     def _fmt_pick(i: int, p: dict) -> str:
         code = str(p['代號'])
@@ -289,6 +310,34 @@ def _section_picks(top_n: int = 5) -> str:
     else:
         lines.append(f"\n🚫 <b>做空：</b>{rep_s.skip_reason}")
     return "\n".join(lines)
+
+
+def _section_track_record() -> str:
+    """系統累積績效 — 7 / 30 日 / all-time，僅看 TG 自動 lock 的 closed sessions."""
+    rows = []
+    for days, label in [(7, "過去 7 日"), (30, "過去 30 日"),
+                         (None, "累積全期")]:
+        try:
+            tr = realbacktest.track_record(days=days, auto_only=True)
+        except Exception:
+            tr = None
+        if not tr or tr["n_holdings"] == 0:
+            rows.append(f"   {label}：<i>累積中</i>")
+            continue
+        rows.append(
+            f"   {label}：命中 <b>{tr['win']}/{tr['n_holdings']}</b> "
+            f"({tr['win_rate']:.0f}%) ｜ 平均 <b>{tr['avg_return_pct']:+.2f}%</b>"
+            f" ｜ 最佳 {tr['best']:+.1f}% / 最差 {tr['worst']:+.1f}%"
+        )
+    # 若三個全 "累積中" → 顯示首次啟動說明
+    all_empty = all("累積中" in r for r in rows)
+    header = "📊 <b>系統 Track Record</b>（自動追蹤、無人為干預）"
+    if all_empty:
+        return (f"\n{header}\n"
+                + "\n".join(rows)
+                + "\n   <i>📝 5 日後首批 session 結算，"
+                + "30 個交易日後數字才有統計意義</i>")
+    return f"\n{header}\n" + "\n".join(rows)
 
 
 def _section_realbacktest() -> str:
@@ -385,7 +434,7 @@ def build_daily_report(top_n: int = 5,
               可選: ['regime', 'picks', 'backtest', 'etf']
     """
     if sections is None:
-        sections = ["regime", "dca", "us_market", "commodities",
+        sections = ["track_record", "regime", "dca", "us_market", "commodities",
                     "picks", "backtest", "etf"]
     now = _now_tpe()
     weekday_zh = "一二三四五六日"[now.weekday()]
@@ -394,6 +443,8 @@ def build_daily_report(top_n: int = 5,
         f"📅 <b>{ts_full} (星期{weekday_zh}) 台北股市分析器每日報告</b>",
         "━━━━━━━━━━━━━━━━━━━",
     ]
+    if "track_record" in sections:
+        parts.append(_section_track_record())
     if "regime" in sections:
         parts.append(_section_regime())
     if "dca" in sections:
@@ -433,13 +484,56 @@ def build_daily_report(top_n: int = 5,
     return "\n".join(parts)
 
 
+def _auto_lock_today_picks(top_n: int) -> list[str]:
+    """把 _LAST_PICKS 緩存的 long / short 推薦 lock 進 realbacktest.
+
+    呼叫前 _section_picks 必須已執行過（緩存才有資料）。
+    每邊資金預設 100 萬 × capital_scale（regime-aware）。
+    回傳 ['long #123 (5 檔)', ...] log 訊息。
+    """
+    msgs = []
+    base_capital = 1_000_000
+    for side in ("long", "short"):
+        picks = _LAST_PICKS.get(side) or []
+        if not picks or not _LAST_PICKS.get(f"{side}_proceed"):
+            continue
+        scale = _LAST_PICKS.get(f"{side}_capital_scale", 1.0)
+        hold_days = _LAST_PICKS.get(f"{side}_hold_days", 5)
+        try:
+            sid = realbacktest.lock_session_auto(
+                side, picks,
+                capital=base_capital * scale,
+                hold_days=hold_days,
+                note=f"08:30 daily (n={len(picks)}, hold={hold_days}d)",
+            )
+            if sid is None:
+                msgs.append(f"{side}: skip (今日已 lock)")
+            else:
+                msgs.append(f"{side} #{sid} ({len(picks)} 檔)")
+        except Exception as e:
+            msgs.append(f"{side} 失敗: {str(e)[:60]}")
+    return msgs
+
+
 def send_daily_report(top_n: int = 5,
                        sections: list[str] | None = None,
-                       auto_fetch_etf: bool = True) -> tuple[bool, str]:
+                       auto_fetch_etf: bool = True,
+                       auto_track: bool = True) -> tuple[bool, str]:
     """組合並發送每日報告.
 
     auto_fetch_etf: 發送前先自動抓主動式 ETF 最新持股（True=確保資料最新）。
+    auto_track: True 時自動結算到期 session + lock 今日推薦進 realbacktest，
+               用於累積 Track Record。
     """
+    # === Phase 2: 結算到期 sessions（在算 track record 之前） ===
+    expired_log = []
+    if auto_track:
+        try:
+            for sid, n, pnl in realbacktest.auto_close_expired():
+                expired_log.append(f"#{sid} n={n} P&L={pnl:+,.0f}")
+        except Exception as e:
+            expired_log.append(f"auto_close 失敗: {str(e)[:60]}")
+
     if auto_fetch_etf:
         try:
             metas = etf.top_n(5, taiwan_only=True)
@@ -450,4 +544,22 @@ def send_daily_report(top_n: int = 5,
 
     text = build_daily_report(top_n=top_n, sections=sections)
     ok, msg = telegram_notify.send_long(text, parse_mode="HTML")
+
+    # === Phase 1: TG 推送成功 → 自動 lock 今日推薦 ===
+    lock_log = []
+    if ok and auto_track:
+        try:
+            lock_log = _auto_lock_today_picks(top_n=top_n)
+        except Exception as e:
+            lock_log.append(f"auto_lock 失敗: {str(e)[:60]}")
+
+    # 把 auto_track 訊息附在回傳 msg 後面（給 send_daily_report.py log 看）
+    if expired_log or lock_log:
+        suffix_parts = []
+        if expired_log:
+            suffix_parts.append(f"結算 {len(expired_log)}: " + "; ".join(expired_log))
+        if lock_log:
+            suffix_parts.append(f"鎖入: " + "; ".join(lock_log))
+        msg = (msg or "") + " ｜ " + " ｜ ".join(suffix_parts)
+
     return ok, msg

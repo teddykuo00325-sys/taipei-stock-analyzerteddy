@@ -349,6 +349,118 @@ def lock_session_historical(side: Literal["long", "short"],
     return sid
 
 
+# ---------------------------------------------------------------
+# TG 自動化：lock / auto-close / track-record
+# ---------------------------------------------------------------
+AUTO_NOTE_PREFIX = "TG_auto"
+
+
+def lock_session_auto(side: Literal["long", "short"],
+                       picks: list[dict],
+                       capital: float = 1_000_000,
+                       hold_days: int = 5,
+                       note: str | None = None) -> int | None:
+    """TG 自動 lock — 同日同方向已存在 auto session 則靜默 skip（回傳 None）.
+
+    用於每日 08:30 TG 推送後自動把推薦 picks 紙上交易，後續結算累積 track record.
+    """
+    today = date.today().isoformat()
+    with _lock, _conn() as c:
+        existing = c.execute(
+            "SELECT id FROM realbt_session "
+            "WHERE lock_date=? AND side=? AND note LIKE ?",
+            (today, side, f"{AUTO_NOTE_PREFIX}%"),
+        ).fetchone()
+        if existing:
+            return None
+    full_note = f"{AUTO_NOTE_PREFIX} {note or ''}".strip()
+    return lock_session(side, picks, capital=capital,
+                         hold_days=hold_days, note=full_note,
+                         use_live_entry=True)
+
+
+def auto_close_expired() -> list[tuple[int, int, float]]:
+    """結算所有 target_exit_date <= today 的 open sessions.
+
+    回傳 [(session_id, n_closed, total_pnl_gross), ...]
+    """
+    today = date.today()
+    closed = []
+    for sess in list_sessions(status="open"):
+        if not sess.target_exit_date:
+            continue
+        try:
+            target_dt = date.fromisoformat(sess.target_exit_date)
+        except Exception:
+            continue
+        if today < target_dt:
+            continue
+        try:
+            n, pnl = close_session(sess.id)
+            closed.append((sess.id, n, pnl))
+        except Exception:
+            continue
+    return closed
+
+
+def track_record(days: int | None = None,
+                  auto_only: bool = True) -> dict | None:
+    """彙整系統累積績效（僅 closed sessions）.
+
+    Args:
+        days: 取最近 N 日 lock_date 的 sessions；None = 全部
+        auto_only: True 只算 TG 自動 lock 的（排除手動回測）
+
+    回傳：
+        {
+            "n_sessions": int,
+            "n_holdings": int,         # 展開到單檔
+            "win": int, "lose": int,
+            "win_rate": float,         # 0-100
+            "avg_return_pct": float,   # 單檔平均報酬 %
+            "best": float, "worst": float,
+            "period_days": int | None,
+        }
+        若無資料回傳 None.
+    """
+    sessions = list_sessions(status="closed")
+    if auto_only:
+        sessions = [s for s in sessions
+                    if s.note and AUTO_NOTE_PREFIX in s.note]
+    if days:
+        cutoff = (date.today() - timedelta(days=days)).isoformat()
+        sessions = [s for s in sessions if s.lock_date >= cutoff]
+
+    win = lose = 0
+    pcts: list[float] = []
+    for sess in sessions:
+        for h in list_holdings(sess.id):
+            if h.exit_price is None or h.entry_price <= 0:
+                continue
+            if sess.side == "long":
+                pct = (h.exit_price / h.entry_price - 1) * 100
+            else:
+                pct = (h.entry_price / h.exit_price - 1) * 100
+            pcts.append(pct)
+            if pct > 0:
+                win += 1
+            else:
+                lose += 1
+
+    if not pcts:
+        return None
+    return {
+        "n_sessions": len(sessions),
+        "n_holdings": len(pcts),
+        "win": win, "lose": lose,
+        "win_rate": win / len(pcts) * 100,
+        "avg_return_pct": sum(pcts) / len(pcts),
+        "best": max(pcts),
+        "worst": min(pcts),
+        "period_days": days,
+    }
+
+
 def reanchor_entry_prices(session_id: int) -> dict:
     """以最新 MIS 即時價（或今日收盤）重置 session 的進場價.
 
