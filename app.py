@@ -2623,6 +2623,56 @@ else:
     full_name = info["full_name"] if info else name
     rev_info = cached_revenue(code, _today_key())
 
+    # === 🇺🇸 美股 hint：若為電子/半導體類股 → 顯示昨夜費半 + 預期影響 ===
+    _us_hint_industries = (
+        "半導體業", "電子業", "電腦及週邊設備業", "光電業",
+        "通信網路業", "電子零組件業", "電子通路業", "資訊服務業",
+        "其他電子業", "電子工業",
+    )
+    if any(s in (ind_name or "") for s in _us_hint_industries):
+        try:
+            us_data = us_market.fetch_us_market()
+            sox = next((q for q in us_data.get("indices", [])
+                         if q.symbol == "^SOX"), None)
+            corr = us_data.get("correlation", {}).get(
+                "sox_vs_2330_30d", 0)
+            if sox:
+                last_date = us_data.get("last_date", "")
+                sox_color = "#e55353" if sox.change_pct > 0 \
+                    else "#3dbd6e" if sox.change_pct < 0 else "#aaa"
+                # 預期影響：相關係數 × SOX 漲跌方向
+                if abs(corr) > 0.4:
+                    expect = ("偏多" if (corr > 0 and sox.change_pct > 0) or
+                              (corr < 0 and sox.change_pct < 0) else "偏空")
+                    expect_color = ("#e55353" if expect == "偏多"
+                                     else "#3dbd6e")
+                    interp = "高度同步" if abs(corr) > 0.7 else "中度相關"
+                    hint_msg = (
+                        f"📌 <b>{last_date} 費半 SOX</b>　"
+                        f"<span style='color:{sox_color}; font-weight:bold;'>"
+                        f"{sox.price:,.0f} ({sox.change_pct:+.2f}%)</span>"
+                        f"　｜ 30 日相關 <b>{corr:+.2f}</b>（{interp}）"
+                        f"　→ 預期開盤 "
+                        f"<span style='color:{expect_color}; "
+                        f"font-weight:bold;'>{expect}</span>"
+                    )
+                else:
+                    hint_msg = (
+                        f"📌 <b>{last_date} 費半 SOX</b>　"
+                        f"<span style='color:{sox_color}; font-weight:bold;'>"
+                        f"{sox.price:,.0f} ({sox.change_pct:+.2f}%)</span>"
+                        f"　｜ 30 日相關 {corr:+.2f}（弱相關，影響有限）"
+                    )
+                st.markdown(
+                    f"<div style='background:rgba(100,180,255,0.10); "
+                    f"border-left:3px solid #7ab8ff; padding:6px 12px; "
+                    f"border-radius:4px; margin-bottom:6px; "
+                    f"font-size:14px;'>{hint_msg}</div>",
+                    unsafe_allow_html=True,
+                )
+        except Exception:
+            pass
+
     # ============================================================
     # 📌 頂部：大標題列（名稱/代號 + 現價超大）
     # ============================================================

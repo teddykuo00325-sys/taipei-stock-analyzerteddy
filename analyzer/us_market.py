@@ -82,29 +82,49 @@ def _fetch_one(symbol: str) -> tuple[float, float, float, str] | None:
 
 
 def _fetch_correlation_with_tw() -> dict[str, float]:
-    """30 日：費半 vs 台積電(2330) 的滾動相關性 — 用 yfinance 拿."""
+    """30 日：費半 vs 台積電(2330) 滾動相關性.
+
+    ★ 時區對齊修正：
+    台股 T 日（早上 9 點開盤）反映的是美股 T-1 日（紐約時間 16:00 收盤
+    = 台北 T 日凌晨 4 點）的訊息。所以正確的對齊方式是：
+      ^SOX_{T-1} 的日報酬 ↔ 2330_{T} 的日報酬
+    把 SOX 日期 +1 後 join，等同於「TW 同一天交易反映前夜 SOX 收盤」。
+    """
     try:
-        sox = yf.download("^SOX", period="60d", progress=False,
-                           auto_adjust=False)["Close"]
-        tsmc = yf.download("2330.TW", period="60d", progress=False,
-                            auto_adjust=False)["Close"]
-        if sox.empty or tsmc.empty:
-            return {}
-        # 算每日報酬 + 對齊
         import pandas as pd
-        if hasattr(sox, "columns"):
-            sox = sox.iloc[:, 0] if not isinstance(sox, pd.Series) else sox
-        if hasattr(tsmc, "columns"):
-            tsmc = tsmc.iloc[:, 0] if not isinstance(tsmc, pd.Series) else tsmc
+        sox_raw = yf.download("^SOX", period="60d", progress=False,
+                               auto_adjust=False)
+        tsmc_raw = yf.download("2330.TW", period="60d", progress=False,
+                                auto_adjust=False)
+        if sox_raw.empty or tsmc_raw.empty:
+            return {}
+        # 拆出 Close 欄位（yfinance 可能回 MultiIndex 或單層）
+        def _close(df):
+            if isinstance(df.columns, pd.MultiIndex):
+                return df["Close"].iloc[:, 0]
+            return df["Close"]
+        sox = _close(sox_raw)
+        tsmc = _close(tsmc_raw)
+        # 去 tz 統一索引
+        if sox.index.tz is not None:
+            sox.index = sox.index.tz_localize(None)
+        if tsmc.index.tz is not None:
+            tsmc.index = tsmc.index.tz_localize(None)
+        # 日報酬
         sox_ret = sox.pct_change().dropna()
         tsmc_ret = tsmc.pct_change().dropna()
-        # 對齊日期取交集
-        df = sox_ret.to_frame("sox").join(tsmc_ret.to_frame("tsmc"),
-                                            how="inner").dropna()
+        # ★ 關鍵：SOX 日期 +1，讓「美股 T-1 收盤 → 台股 T 開盤反應」對齊
+        # 即 SOX_2026-06-18 的報酬與 2330_2026-06-19 的報酬配對
+        sox_shifted = sox_ret.copy()
+        sox_shifted.index = sox_shifted.index + pd.Timedelta(days=1)
+        df = (tsmc_ret.to_frame("tsmc")
+              .join(sox_shifted.to_frame("sox_prev_us"), how="inner")
+              .dropna())
         if len(df) < 10:
             return {}
-        corr = float(df["sox"].corr(df["tsmc"]))
-        return {"sox_vs_2330_30d": round(corr, 3)}
+        corr = float(df["sox_prev_us"].corr(df["tsmc"]))
+        return {"sox_vs_2330_30d": round(corr, 3),
+                "n_days": len(df)}
     except Exception:
         return {}
 
