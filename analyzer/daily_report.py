@@ -9,7 +9,8 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 
 from . import (backtest_filter, dca_alert, etf, etf_scraper,
-               marketdata, realbacktest, screener, telegram_notify)
+               marketdata, realbacktest, screener, telegram_notify,
+               us_market)
 
 
 # 台北時區 (UTC+8) — 確保 GitHub Actions / 雲端 cron 跑時用台灣時間
@@ -59,6 +60,67 @@ def _section_dca_alerts() -> str:
         else:
             lines.append(a.note)
             lines.append(f"   <i>📝 {a.suggestion}</i>")
+    return "\n".join(lines)
+
+
+def _section_us_market() -> str:
+    """🇺🇸 美股關鍵指標 + 巨頭 + 跟台股相關性."""
+    try:
+        data = us_market.fetch_us_market()
+    except Exception:
+        return ""
+    indices = data.get("indices", [])
+    giants = data.get("giants", [])
+    if not indices and not giants:
+        return ""
+
+    lines: list[str] = []
+    last_date = data.get("last_date", "")
+    lines.append(f"\n🇺🇸 <b>美股關鍵指標</b>"
+                 + (f"（{last_date} 收盤）" if last_date else ""))
+
+    # 指數
+    for q in indices:
+        arrow = "🔴" if q.change_pct >= 0 else "🟢"
+        # VIX 是反向：上漲代表恐慌升高（給綠標）
+        if q.symbol == "^VIX":
+            arrow = "🟢" if q.change_pct >= 0 else "🔴"
+        lines.append(
+            f"   {arrow} {q.label}　<b>{q.price:,.2f}</b>　"
+            f"({q.change_pct:+.2f}%)　<i>{q.correlation}</i>"
+        )
+
+    # 相關性 hint（費半 vs 台積電 30 日）
+    corr = data.get("correlation", {})
+    if "sox_vs_2330_30d" in corr:
+        c = corr["sox_vs_2330_30d"]
+        sox_q = next((q for q in indices if q.symbol == "^SOX"), None)
+        if sox_q:
+            interp = "高度同步" if abs(c) > 0.7 else \
+                     "中度相關" if abs(c) > 0.4 else "弱相關"
+            sox_dir = "漲" if sox_q.change_pct > 0 else "跌"
+            tsmc_hint = ("偏多" if c > 0.4 and sox_q.change_pct > 0 else
+                         "偏空" if c > 0.4 and sox_q.change_pct < 0 else
+                         "中性")
+            lines.append(
+                f"   <i>📌 費半 vs 台積電 30 日相關 "
+                f"<b>{c:+.2f}</b>（{interp}）；費半{sox_dir}"
+                f" → 預期 2330 開盤 <b>{tsmc_hint}</b></i>"
+            )
+
+    # 巨頭
+    if giants:
+        lines.append(f"\n🦾 <b>美股巨頭</b>")
+        for q in giants:
+            arrow = "🔴" if q.change_pct >= 0 else "🟢"
+            # > ±1.5% 加 ⭐ 標重大異動
+            star = " ⭐" if abs(q.change_pct) >= 1.5 else ""
+            lines.append(
+                f"   {arrow} {q.icon} {q.label}　"
+                f"<b>${q.price:,.2f}</b>　"
+                f"({q.change_pct:+.2f}%){star}　<i>{q.correlation}</i>"
+            )
+
     return "\n".join(lines)
 
 
@@ -323,8 +385,8 @@ def build_daily_report(top_n: int = 5,
               可選: ['regime', 'picks', 'backtest', 'etf']
     """
     if sections is None:
-        sections = ["regime", "dca", "commodities", "picks",
-                    "backtest", "etf"]
+        sections = ["regime", "dca", "us_market", "commodities",
+                    "picks", "backtest", "etf"]
     now = _now_tpe()
     weekday_zh = "一二三四五六日"[now.weekday()]
     ts_full = now.strftime("%Y-%m-%d %H:%M")
@@ -336,6 +398,10 @@ def build_daily_report(top_n: int = 5,
         parts.append(_section_regime())
     if "dca" in sections:
         sect = _section_dca_alerts()
+        if sect:
+            parts.append(sect)
+    if "us_market" in sections:
+        sect = _section_us_market()
         if sect:
             parts.append(sect)
     if "commodities" in sections:
