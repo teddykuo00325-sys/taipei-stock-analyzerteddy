@@ -319,7 +319,18 @@ def screen(
     chunk_size: int = 40,
     progress_cb: Callable[[float, str], None] | None = None,
     limit: int | None = None,
+    skip_yfinance_warm: bool = False,
 ) -> dict:
+    """選股器主入口.
+
+    skip_yfinance_warm=True 時跳過 bulk_prepare 的 yfinance 增量更新，
+    純用 price_cache 既有資料。給雲端 cron 用 — Yahoo 對 GH Actions IP
+    擋下時，硬抓會 timeout 累積到 15+ 分鐘導致 workflow 被 cancel。
+    """
+    # 雲端自動偵測：GitHub Actions 環境強制 skip
+    import os as _os
+    if _os.environ.get("GITHUB_ACTIONS") == "true":
+        skip_yfinance_warm = True
     snap = universe.snapshot()
     if pre_filter_lots_today > 0:
         snap = snap[snap["TradeVolume"] >= pre_filter_lots_today * 1000]
@@ -348,10 +359,16 @@ def screen(
         if progress_cb:
             progress_cb(0.02 + pct * 0.60, msg)
 
-    cache_result = price_cache.bulk_prepare(
-        codes, warm_period="2y",
-        chunk_size=chunk_size, progress_cb=_warm_cb,
-    )
+    if skip_yfinance_warm:
+        # 雲端跳過 yfinance bulk_prepare，純用 cache
+        if progress_cb:
+            progress_cb(0.05, "雲端模式：跳過 yfinance 增量更新")
+        cache_result = {"warmed": 0, "updated": 0, "failed": []}
+    else:
+        cache_result = price_cache.bulk_prepare(
+            codes, warm_period="2y",
+            chunk_size=chunk_size, progress_cb=_warm_cb,
+        )
 
     # ===== 步驟 2：自快取讀取並評分（37% 進度）=====
     results: list[dict] = []
