@@ -2124,10 +2124,11 @@ elif mode == "📋 實盤回測":
     # --- 側邊欄：📅 歷史日期回測 ---
     with st.sidebar.expander("📅 歷史日期回測", expanded=False):
         st.caption("選一個過去日期，模擬「假設那天照系統建議進場」，"
-                   "持有 X 日後（或到今天為止）的實際結果。")
+                   "持有 X 個**交易日**後（或到今天為止）的實際結果。")
         from datetime import date as _date_h, timedelta as _td_h
         max_back_dt = _date_h.today() - _td_h(days=1)
-        default_dt = _date_h.today() - _td_h(days=10)
+        # ★ 預設 30 天前 — 確保 5 日持有期已完整結算
+        default_dt = _date_h.today() - _td_h(days=30)
         h_date = st.date_input(
             "進場日期",
             value=default_dt,
@@ -2135,13 +2136,36 @@ elif mode == "📋 實盤回測":
             max_value=max_back_dt,
             key="h_date",
         )
+
+        # ★ 資料可用性檢查 — 即時顯示該日期是否有 K 線
+        try:
+            _test_df = price_cache._load("2330")  # 台積電當代表
+            if not _test_df.empty:
+                _cache_dates = _test_df.index.date
+                _has_data = any(d == h_date for d in _cache_dates)
+                _cache_start = _cache_dates.min().isoformat()
+                _cache_end = _cache_dates.max().isoformat()
+                if _has_data:
+                    st.success(f"✅ 該日期有 K 線資料 "
+                               f"（cache 範圍 {_cache_start} → {_cache_end}）")
+                else:
+                    st.warning(f"⚠️ 該日期可能無 K 線資料 "
+                               f"（cache: {_cache_start} → {_cache_end}）"
+                               f"— 跑了會 fail")
+        except Exception:
+            pass
+
         h_top_n = st.number_input("Top N（多/空各幾檔）", 1, 20, 5,
                                    key="h_top_n")
         h_capital = st.number_input(
             "資金 (TWD)", 100_000, 10_000_000, 1_000_000, 100_000,
             key="h_capital",
         )
-        h_hold = st.number_input("持有天數", 1, 60, 5, key="h_hold")
+        h_hold = st.number_input(
+            "持有交易日（business days）", 1, 60, 5,
+            key="h_hold",
+            help="跟實盤回測一致使用交易日，週末/假日不算"
+        )
         h_note = st.text_input(
             "備註", value=f"{h_date.isoformat()} 歷史測試",
             key="h_note",
@@ -2150,6 +2174,20 @@ elif mode == "📋 實盤回測":
             "啟用 5 層智慧過濾", value=True, key="h_use_filter",
             help="Lv1 regime（以該歷史日期當下大盤狀態為準）+ Lv2~5",
         )
+        # ★ 同日已 lock 警示 — 避免按下去才 error
+        try:
+            _h_existing = [
+                s for s in realbacktest.list_sessions()
+                if s.lock_date == h_date.isoformat()
+                and (s.note and "歷史回測" in (s.note or ""))
+            ]
+            if _h_existing:
+                st.info(f"📌 此日期已有 {len(_h_existing)} 個歷史 session "
+                        f"(#{','.join(str(s.id) for s in _h_existing)})，"
+                        f"再跑會被擋 — 請先刪除舊的或選不同日期")
+        except Exception:
+            pass
+
         if st.button("🔍 跑歷史回測", use_container_width=True,
                      key="h_run", type="primary"):
             as_of = h_date.isoformat()
@@ -2223,14 +2261,39 @@ elif mode == "📋 實盤回測":
                         if msgs:
                             st.success(
                                 f"✅ 歷史回測：{' + '.join(msgs)} ｜ "
-                                f"持有 {eff_hold_h} 日")
+                                f"持有 {eff_hold_h} 個交易日"
+                            )
+                            # 顯示剛 lock 的 picks 摘要（不 rerun 讓使用者看清楚）
+                            with st.container():
+                                if long_h:
+                                    st.markdown(
+                                        f"**🚀 多單 ({len(long_h)} 檔)**：" +
+                                        " / ".join(
+                                            f"{p['代號']} {p.get('名稱', '')} "
+                                            f"({p.get('分數', 0)})"
+                                            for p in long_h
+                                        )
+                                    )
+                                if short_h:
+                                    st.markdown(
+                                        f"**🐻 空單 ({len(short_h)} 檔)**：" +
+                                        " / ".join(
+                                            f"{p['代號']} {p.get('名稱', '')} "
+                                            f"({p.get('分數', 0)})"
+                                            for p in short_h
+                                        )
+                                    )
+                            st.info(
+                                "📋 已寫入 DB，下方主畫面會看到新 session 卡片 "
+                                "(請手動 F5 重整看 P&L)"
+                            )
                             if storage.is_configured():
                                 try:
                                     realbacktest.backup_now(
                                         message=f"historical lock {as_of}")
                                 except Exception:
                                     pass
-                            st.rerun()
+                            # ★ 不再 st.rerun() — 讓使用者看清楚結果
                         else:
                             st.error("❌ 無任何符合條件的部位")
                     except ValueError as e:
@@ -2429,6 +2492,31 @@ elif mode == "📊 系統績效":
     st.caption("📊 系統績效　·　所有 TG 自動 lock 的紙上交易，累積驗證系統獲利能力")
     render_market_sidebar()
 
+    # ★ 共用快取 — 4 個 tab 共讀同一份 dataframe，避免重複掃 DB + regime lookup
+    @st.cache_data(ttl=300, show_spinner=False)
+    def _perf_holdings(_minute_key: int):
+        return performance.holdings_df()
+
+    @st.cache_data(ttl=300, show_spinner=False)
+    def _perf_sessions(_minute_key: int):
+        return performance.sessions_df()
+
+    @st.cache_data(ttl=300, show_spinner=False)
+    def _perf_equity(_minute_key: int, use_net: bool):
+        return performance.equity_curve(initial_capital=1.0, use_net=use_net)
+
+    @st.cache_data(ttl=1800, show_spinner=False)
+    def _perf_twii(_day_key: str, start: str, end: str):
+        return performance.twii_benchmark(start, end, normalize_to=1.0)
+
+    @st.cache_data(ttl=300, show_spinner=False)
+    def _perf_winrate(_minute_key: int, dim: str):
+        return performance.win_rate_by(dim)
+
+    import time as _t_perf
+    _perf_min_key = int(_t_perf.time() // 60)
+    _perf_day_key = date.today().isoformat()
+
     with st.expander("📖 這個面板在看什麼？（必讀）", expanded=False):
         st.markdown("""
 **資料來源**：每日 08:30 TG 推送時，系統自動把 Top 5 long / short 推薦
@@ -2458,16 +2546,50 @@ elif mode == "📊 系統績效":
             "**第一筆出現約在啟用後第 5 個交易日左右**。"
         )
     else:
+        # ★ 預設顯示淨利（扣手續費 + 證交稅 + 借券費），切換可看毛利
+        show_net = st.toggle(
+            "顯示淨報酬（扣交易成本）",
+            value=True,
+            help="淨報酬 = 毛利 − 手續費 0.1425% × 2 − 證交稅 0.3% − "
+                 "做空融券借券費年化 6%（按日攤）",
+        )
+        suffix = "（淨）" if show_net else "（毛）"
+        ret_key = "total_return_net_pct" if show_net else "total_return_pct"
+        avg_key = "avg_return_net_pct" if show_net else "avg_return_pct"
+        win_key = "win_rate_net" if show_net else "win_rate"
+        dd_key = "max_dd_pct" if show_net else "max_dd_pct_gross"
+
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("總報酬率", f"{kpi['total_return_pct']:+.2f}%",
-                  f"{kpi['n_sessions']} sessions / {kpi['n_holdings']} 持股")
-        c2.metric("勝率", f"{kpi['win_rate']:.1f}%",
-                  f"平均單檔 {kpi['avg_return_pct']:+.2f}%")
-        c3.metric("最大回撤", f"{kpi['max_dd_pct']:.2f}%",
-                  f"{kpi.get('max_dd_peak', '')} → "
-                  f"{kpi.get('max_dd_trough', '')}")
+        c1.metric(
+            f"總報酬率{suffix}", f"{kpi[ret_key]:+.2f}%",
+            f"{kpi['n_sessions']} sessions / {kpi['n_holdings']} 持股 ｜ "
+            f"vs 毛 {kpi['total_return_pct']:+.2f}%"
+            if show_net else
+            f"{kpi['n_sessions']} sessions / {kpi['n_holdings']} 持股",
+        )
+        c2.metric(
+            f"勝率{suffix}", f"{kpi[win_key]:.1f}%",
+            f"平均單檔 {kpi[avg_key]:+.2f}%",
+        )
+        c3.metric(
+            f"最大回撤{suffix}", f"{kpi[dd_key]:.2f}%",
+            f"{kpi.get('max_dd_peak', '')} → "
+            f"{kpi.get('max_dd_trough', '')}",
+        )
         c4.metric("資料區間", f"{kpi.get('first_date', '—')}",
                   f"至 {kpi.get('last_date', '—')}")
+
+        # ⚠️ 樣本量警示
+        n_h = kpi['n_holdings']
+        if n_h < 30:
+            st.warning(
+                f"⚠️ 樣本不足（N={n_h} < 30），統計上"
+                f"**沒有意義**，僅供參考"
+            )
+        elif n_h < 100:
+            st.info(
+                f"📊 樣本累積中（N={n_h}），達 100 後可信度顯著提升"
+            )
 
         st.divider()
 
@@ -2479,23 +2601,32 @@ elif mode == "📊 系統績效":
         ])
 
         with tab_eq:
-            eq = performance.equity_curve(initial_capital=1.0)
+            eq = _perf_equity(_perf_min_key, show_net)
             if eq.empty:
                 st.info("尚無 closed session")
             else:
                 import plotly.graph_objects as _go
                 start = pd.Timestamp(eq["date"].min()).strftime("%Y-%m-%d")
                 end = pd.Timestamp(eq["date"].max()).strftime("%Y-%m-%d")
-                bench = performance.twii_benchmark(start, end,
-                                                    normalize_to=1.0)
+                bench = _perf_twii(_perf_day_key, start, end)
 
                 fig = _go.Figure()
+                # 淨值線（主軸）
                 fig.add_trace(_go.Scatter(
                     x=eq["date"], y=eq["equity"],
-                    mode="lines+markers", name="系統累積",
+                    mode="lines+markers",
+                    name=f"系統累積{suffix}",
                     line=dict(color="#e74c3c", width=2.5),
                     marker=dict(size=7),
                 ))
+                # 毛值線（淡）— 對比交易成本侵蝕
+                if show_net and "equity_gross" in eq.columns:
+                    fig.add_trace(_go.Scatter(
+                        x=eq["date"], y=eq["equity_gross"],
+                        mode="lines", name="系統累積（毛）",
+                        line=dict(color="#e74c3c", width=1, dash="dot"),
+                        opacity=0.5,
+                    ))
                 if not bench.empty:
                     fig.add_trace(_go.Scatter(
                         x=bench["date"], y=bench["twii_norm"],
@@ -2505,7 +2636,7 @@ elif mode == "📊 系統績效":
                 fig.add_hline(y=1.0, line_dash="dot", line_color="#aaa",
                               annotation_text="起始 1.0")
                 fig.update_layout(
-                    title="累積資金倍數（複利）",
+                    title=f"累積資金倍數（複利）{suffix}",
                     xaxis_title="日期", yaxis_title="倍數",
                     hovermode="x unified", height=480,
                 )
@@ -2516,14 +2647,14 @@ elif mode == "📊 系統績效":
                     twii_ret = (float(bench["twii_norm"].iloc[-1]) - 1) * 100
                     alpha = sys_ret - twii_ret
                     a, b, c = st.columns(3)
-                    a.metric("系統報酬", f"{sys_ret:+.2f}%")
+                    a.metric(f"系統報酬{suffix}", f"{sys_ret:+.2f}%")
                     b.metric("TWII 報酬", f"{twii_ret:+.2f}%")
                     c.metric("Alpha (超額報酬)", f"{alpha:+.2f}%",
-                              "🔴 跑贏" if alpha > 0 else "🟢 跑輸")
+                              "🔴 跑贏大盤" if alpha > 0 else "🟢 跑輸大盤")
 
         with tab_win:
             st.markdown("#### 多/空 分群")
-            by_side = performance.win_rate_by("side")
+            by_side = _perf_winrate(_perf_min_key, "side")
             if by_side.empty:
                 st.info("—")
             else:
@@ -2540,7 +2671,7 @@ elif mode == "📊 系統績效":
                 )
 
             st.markdown("#### 大盤 regime 分群")
-            by_reg = performance.win_rate_by("regime")
+            by_reg = _perf_winrate(_perf_min_key, "regime")
             if by_reg.empty:
                 st.info("—")
             else:
@@ -2558,7 +2689,7 @@ elif mode == "📊 系統績效":
                 st.caption("regime 為 lock_date 當天的市況（retroactive lookup）")
 
         with tab_dist:
-            h = performance.holdings_df()
+            h = _perf_holdings(_perf_min_key)
             if h.empty:
                 st.info("—")
             else:
@@ -2584,7 +2715,7 @@ elif mode == "📊 系統績效":
                 qcol[4].metric("最佳 (P95)", f"{pct.quantile(0.95):+.2f}%")
 
         with tab_detail:
-            sess = performance.sessions_df()
+            sess = _perf_sessions(_perf_min_key)
             if sess.empty:
                 st.info("—")
             else:
@@ -2595,16 +2726,20 @@ elif mode == "📊 系統績效":
                 st.dataframe(
                     view[["session_id", "lock_date", "exit_date", "side",
                           "regime", "n_holdings", "win", "lose",
-                          "session_return_pct", "total_pnl"]]
+                          "session_return_pct", "session_return_net_pct",
+                          "total_pnl", "total_pnl_net", "total_cost"]]
                     .style.format({
                         "session_return_pct": "{:+.2f}%",
+                        "session_return_net_pct": "{:+.2f}%",
                         "total_pnl": "{:+,.0f}",
+                        "total_pnl_net": "{:+,.0f}",
+                        "total_cost": "{:,.0f}",
                     }),
                     use_container_width=True, hide_index=True,
                 )
 
                 st.markdown("#### Holding 層級（單檔明細）")
-                h = performance.holdings_df()
+                h = _perf_holdings(_perf_min_key)
                 view_h = h.copy()
                 view_h["lock_date"] = view_h["lock_date"].dt.strftime(
                     "%Y-%m-%d")
@@ -2614,12 +2749,16 @@ elif mode == "📊 系統績效":
                     view_h[["session_id", "lock_date", "exit_date", "side",
                             "regime", "code", "name",
                             "entry_price", "exit_price",
-                            "return_pct", "pnl"]]
+                            "return_pct", "return_net_pct",
+                            "pnl", "pnl_net", "cost"]]
                     .style.format({
                         "entry_price": "{:.2f}",
                         "exit_price": "{:.2f}",
                         "return_pct": "{:+.2f}%",
+                        "return_net_pct": "{:+.2f}%",
                         "pnl": "{:+,.0f}",
+                        "pnl_net": "{:+,.0f}",
+                        "cost": "{:,.0f}",
                     }),
                     use_container_width=True, hide_index=True, height=400,
                 )

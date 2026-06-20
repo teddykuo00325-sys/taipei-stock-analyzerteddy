@@ -307,7 +307,10 @@ def lock_session_historical(side: Literal["long", "short"],
         as_of = date.fromisoformat(as_of_date)
     except Exception:
         raise ValueError(f"as_of_date 格式錯誤：{as_of_date}（需 YYYY-MM-DD）")
-    target_exit = (as_of + timedelta(days=hold_days)).isoformat()
+    # ★ 用交易日（business day）計算 target_exit_date，跟 lock_session 一致
+    # 否則 hold_days=5 歷史回測得日曆 5 天 ≠ 實盤回測得交易 5 天
+    target_exit = (pd.Timestamp(as_of)
+                   + pd.tseries.offsets.BDay(hold_days)).date().isoformat()
     top_n = len(picks)
     if top_n == 0:
         raise ValueError("picks 不可為空")

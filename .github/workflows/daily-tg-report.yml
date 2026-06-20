@@ -54,7 +54,20 @@ jobs:
           git add data/realbacktest.db
           if git diff --staged --quiet; then
             echo "realbacktest.db 無變動，跳過 commit"
-          else
-            git commit -m "auto(tg-track): realbacktest snapshot $(TZ=Asia/Taipei date +%Y-%m-%d)"
-            git push
+            exit 0
           fi
+          git commit -m "auto(tg-track): realbacktest snapshot $(TZ=Asia/Taipei date +%Y-%m-%d)"
+          # ★ Push with rebase retry — 處理並行 workflow / 手動 commit 衝突
+          # 最多 5 次重試，每次 fetch + rebase + push
+          for i in 1 2 3 4 5; do
+            if git push; then
+              echo "✅ push 成功 (attempt $i)"
+              exit 0
+            fi
+            echo "⚠️ push 失敗 (attempt $i)，rebase 重試"
+            git fetch origin main
+            git rebase origin/main || { git rebase --abort; exit 1; }
+            sleep 2
+          done
+          echo "❌ push 5 次都失敗，放棄"
+          exit 1
