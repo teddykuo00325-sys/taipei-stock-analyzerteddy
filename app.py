@@ -11,8 +11,8 @@ import logging
 from analyzer import (backtest_filter, broker, broker_history, chart,
                       daily_report, data, diagnosis, etf, etf_scraper,
                       granville, indicators, industry, live,
-                      margin_history, marketdata, moneyflow, price_cache,
-                      realbacktest, revenue, schools, screener,
+                      margin_history, marketdata, moneyflow, performance,
+                      price_cache, realbacktest, revenue, schools, screener,
                       shareholders, storage, targets, telegram_notify,
                       us_market, wave, watchlist)
 
@@ -650,7 +650,7 @@ mode = st.sidebar.radio(
     "模式",
     ["🎯 今日選股", "🔎 個股查詢", "⭐ 收藏清單",
      "📈 多股比較", "📊 主動式ETF", "🔥 資金流向",
-     "📋 實盤回測"],
+     "📋 實盤回測", "📊 系統績效"],
     key="app_mode",
     label_visibility="collapsed",
 )
@@ -2419,6 +2419,210 @@ elif mode == "📋 實盤回測":
                         except Exception:
                             pass
                     st.rerun()
+
+
+# ============================================================
+# 📊 系統績效 — TG_auto 累積追蹤、視覺化勝率與回撤
+# ============================================================
+elif mode == "📊 系統績效":
+    render_index_header()
+    st.caption("📊 系統績效　·　所有 TG 自動 lock 的紙上交易，累積驗證系統獲利能力")
+    render_market_sidebar()
+
+    with st.expander("📖 這個面板在看什麼？（必讀）", expanded=False):
+        st.markdown("""
+**資料來源**：每日 08:30 TG 推送時，系統自動把 Top 5 long / short 推薦
+鎖進 `realbacktest.db`（標籤 `TG_auto`），持有期到了自動以該日收盤結算。
+
+**意義**：這是**不能被事後修改**的紙上交易紀錄 — 系統推什麼就鎖什麼，
+不能 cherry-pick 或重跑。要看真實有效性，**等 30 個交易日**累積。
+
+**指標含意**：
+- **累積資金倍數**：複利後資金倍率（起點 1.0）
+- **vs 加權指數**：同期 ^TWII 漲跌幅，比較系統 alpha
+- **勝率**：return_pct > 0 的比例
+- **最大回撤**：資金曲線從高點下跌的最大幅度
+        """)
+
+    try:
+        kpi = performance.summary_kpis(initial_capital=1.0)
+    except Exception as e:
+        st.error(f"讀取績效資料失敗：{e}")
+        kpi = {"n_sessions": 0}
+
+    if kpi.get("n_sessions", 0) == 0:
+        st.info(
+            "🕐 **資料累積中** — 還沒有任何已結算的 TG_auto session。\n\n"
+            "每天 08:30 TG 推送時會自動鎖入推薦，持有期 (5~10 日，依 regime) "
+            "到期後自動結算累積到此處。"
+            "**第一筆出現約在啟用後第 5 個交易日左右**。"
+        )
+    else:
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("總報酬率", f"{kpi['total_return_pct']:+.2f}%",
+                  f"{kpi['n_sessions']} sessions / {kpi['n_holdings']} 持股")
+        c2.metric("勝率", f"{kpi['win_rate']:.1f}%",
+                  f"平均單檔 {kpi['avg_return_pct']:+.2f}%")
+        c3.metric("最大回撤", f"{kpi['max_dd_pct']:.2f}%",
+                  f"{kpi.get('max_dd_peak', '')} → "
+                  f"{kpi.get('max_dd_trough', '')}")
+        c4.metric("資料區間", f"{kpi.get('first_date', '—')}",
+                  f"至 {kpi.get('last_date', '—')}")
+
+        st.divider()
+
+        tab_eq, tab_win, tab_dist, tab_detail = st.tabs([
+            "📈 累積績效 vs TWII",
+            "🏆 分群勝率",
+            "📊 報酬分佈",
+            "📋 持股明細",
+        ])
+
+        with tab_eq:
+            eq = performance.equity_curve(initial_capital=1.0)
+            if eq.empty:
+                st.info("尚無 closed session")
+            else:
+                import plotly.graph_objects as _go
+                start = pd.Timestamp(eq["date"].min()).strftime("%Y-%m-%d")
+                end = pd.Timestamp(eq["date"].max()).strftime("%Y-%m-%d")
+                bench = performance.twii_benchmark(start, end,
+                                                    normalize_to=1.0)
+
+                fig = _go.Figure()
+                fig.add_trace(_go.Scatter(
+                    x=eq["date"], y=eq["equity"],
+                    mode="lines+markers", name="系統累積",
+                    line=dict(color="#e74c3c", width=2.5),
+                    marker=dict(size=7),
+                ))
+                if not bench.empty:
+                    fig.add_trace(_go.Scatter(
+                        x=bench["date"], y=bench["twii_norm"],
+                        mode="lines", name="^TWII 加權指數",
+                        line=dict(color="#888", width=1.5, dash="dash"),
+                    ))
+                fig.add_hline(y=1.0, line_dash="dot", line_color="#aaa",
+                              annotation_text="起始 1.0")
+                fig.update_layout(
+                    title="累積資金倍數（複利）",
+                    xaxis_title="日期", yaxis_title="倍數",
+                    hovermode="x unified", height=480,
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+                if not bench.empty:
+                    sys_ret = (float(eq["equity"].iloc[-1]) - 1) * 100
+                    twii_ret = (float(bench["twii_norm"].iloc[-1]) - 1) * 100
+                    alpha = sys_ret - twii_ret
+                    a, b, c = st.columns(3)
+                    a.metric("系統報酬", f"{sys_ret:+.2f}%")
+                    b.metric("TWII 報酬", f"{twii_ret:+.2f}%")
+                    c.metric("Alpha (超額報酬)", f"{alpha:+.2f}%",
+                              "🔴 跑贏" if alpha > 0 else "🟢 跑輸")
+
+        with tab_win:
+            st.markdown("#### 多/空 分群")
+            by_side = performance.win_rate_by("side")
+            if by_side.empty:
+                st.info("—")
+            else:
+                st.dataframe(
+                    by_side.style.format({
+                        "win_rate": "{:.1f}%",
+                        "avg_return_pct": "{:+.2f}%",
+                        "median_return_pct": "{:+.2f}%",
+                        "std_return_pct": "{:.2f}",
+                        "best_pct": "{:+.2f}%",
+                        "worst_pct": "{:+.2f}%",
+                    }),
+                    use_container_width=True, hide_index=True,
+                )
+
+            st.markdown("#### 大盤 regime 分群")
+            by_reg = performance.win_rate_by("regime")
+            if by_reg.empty:
+                st.info("—")
+            else:
+                st.dataframe(
+                    by_reg.style.format({
+                        "win_rate": "{:.1f}%",
+                        "avg_return_pct": "{:+.2f}%",
+                        "median_return_pct": "{:+.2f}%",
+                        "std_return_pct": "{:.2f}",
+                        "best_pct": "{:+.2f}%",
+                        "worst_pct": "{:+.2f}%",
+                    }),
+                    use_container_width=True, hide_index=True,
+                )
+                st.caption("regime 為 lock_date 當天的市況（retroactive lookup）")
+
+        with tab_dist:
+            h = performance.holdings_df()
+            if h.empty:
+                st.info("—")
+            else:
+                import plotly.express as _px
+                fig = _px.histogram(
+                    h, x="return_pct", color="side", nbins=30,
+                    barmode="overlay", opacity=0.65,
+                    title="單檔報酬分佈（按 side 著色）",
+                    labels={"return_pct": "報酬率 %"},
+                    color_discrete_map={"long": "#e74c3c",
+                                        "short": "#27ae60"},
+                )
+                fig.add_vline(x=0, line_dash="dash", line_color="#888")
+                fig.update_layout(height=420, hovermode="x")
+                st.plotly_chart(fig, use_container_width=True)
+
+                qcol = st.columns(5)
+                pct = h["return_pct"]
+                qcol[0].metric("最差 (P5)", f"{pct.quantile(0.05):+.2f}%")
+                qcol[1].metric("Q1", f"{pct.quantile(0.25):+.2f}%")
+                qcol[2].metric("中位", f"{pct.median():+.2f}%")
+                qcol[3].metric("Q3", f"{pct.quantile(0.75):+.2f}%")
+                qcol[4].metric("最佳 (P95)", f"{pct.quantile(0.95):+.2f}%")
+
+        with tab_detail:
+            sess = performance.sessions_df()
+            if sess.empty:
+                st.info("—")
+            else:
+                st.markdown("#### Session 層級")
+                view = sess.copy()
+                view["lock_date"] = view["lock_date"].dt.strftime("%Y-%m-%d")
+                view["exit_date"] = view["exit_date"].dt.strftime("%Y-%m-%d")
+                st.dataframe(
+                    view[["session_id", "lock_date", "exit_date", "side",
+                          "regime", "n_holdings", "win", "lose",
+                          "session_return_pct", "total_pnl"]]
+                    .style.format({
+                        "session_return_pct": "{:+.2f}%",
+                        "total_pnl": "{:+,.0f}",
+                    }),
+                    use_container_width=True, hide_index=True,
+                )
+
+                st.markdown("#### Holding 層級（單檔明細）")
+                h = performance.holdings_df()
+                view_h = h.copy()
+                view_h["lock_date"] = view_h["lock_date"].dt.strftime(
+                    "%Y-%m-%d")
+                view_h["exit_date"] = view_h["exit_date"].dt.strftime(
+                    "%Y-%m-%d")
+                st.dataframe(
+                    view_h[["session_id", "lock_date", "exit_date", "side",
+                            "regime", "code", "name",
+                            "entry_price", "exit_price",
+                            "return_pct", "pnl"]]
+                    .style.format({
+                        "entry_price": "{:.2f}",
+                        "exit_price": "{:.2f}",
+                        "return_pct": "{:+.2f}%",
+                        "pnl": "{:+,.0f}",
+                    }),
+                    use_container_width=True, hide_index=True, height=400,
+                )
 
 
 # ============================================================
