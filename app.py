@@ -770,14 +770,13 @@ def render_market_sidebar():
                         unsafe_allow_html=True,
                     )
 
-    # === 🚨 處置股名單（20 分鐘揭示，剛進處置 / 即將開始）===
-    with st.sidebar.expander("🚨 處置股 (20分揭示・剛進 ≤3 日)",
+    # === 🚨 處置股名單（含 3 日跌幅 + 驗證）===
+    with st.sidebar.expander("🚨 處置股 + 跌幅追蹤",
                               expanded=False):
         st.caption(
-            "📌 第一次處置 = 每 20 分鐘揭示成交資訊；"
-            "剛進或即將開始的標的流動性風險最大"
+            "📌 第一次處置 = 20 分鐘揭示；研究：「剛進處置 3 日內已下跌」買進"
+            "後續勝率是否較高"
         )
-        # 寬鬆度切換
         show_all = st.toggle(
             "顯示所有揭示間隔（含 5 分 / 逐筆）",
             value=False,
@@ -788,19 +787,30 @@ def render_market_sidebar():
             "處置開始幾日內（剛進 = 1）", 1, 10, 3,
             key="disposal_max_days",
         )
+        dropped_only = st.toggle(
+            "只看 3 日內已下跌（≤ -3%）",
+            value=False,
+            key="disposal_dropped_only",
+            help="篩出「剛進處置但已下跌」的標的，民間說法買點較佳",
+        )
         try:
             stocks = disposal.recent_disposals(
                 max_days_in=max_days,
                 interval_filter=None if show_all else 20,
                 include_upcoming=True,
             )
+            stocks = disposal.with_price_data(stocks)
+            if dropped_only:
+                stocks = disposal.dropped_during_disposal(
+                    stocks, threshold_pct=-3.0)
         except Exception as _e:
             stocks = []
             st.caption(f"⚠️ 抓取失敗：{_e}")
         if not stocks:
             st.info(
                 f"目前無符合條件的標的"
-                + ("（試試「顯示所有揭示間隔」）" if not show_all else "")
+                + ("（試試「顯示所有揭示間隔」或關閉「只看下跌」）"
+                   if (not show_all or dropped_only) else "")
             )
         else:
             st.caption(f"共 {len(stocks)} 檔")
@@ -810,12 +820,31 @@ def render_market_sidebar():
                 if s.start_date > today:
                     days_until = (s.start_date - today).days
                     status_text = f"⏳ {days_until} 日後開始"
-                    bg = "rgba(255,193,7,0.18)"  # 黃 - 即將
+                    bg = "rgba(255,193,7,0.18)"
                 else:
                     status_text = f"📅 第 {s.days_in} 日"
-                    bg = "rgba(229,83,83,0.18)"  # 紅 - 已開始
+                    bg = "rgba(229,83,83,0.18)"
                 interval_str = (f"{s.interval_min} 分"
                                 if s.interval_min > 0 else "逐筆")
+                # 跌幅資訊
+                price_line = ""
+                if s.entry_price and s.current_price:
+                    drop_color = "#3dbd6e" if (s.drop_pct or 0) < 0 else "#e55353"
+                    drop_emoji = "📉" if (s.drop_pct or 0) < 0 else "📈"
+                    price_line = (
+                        f"<br><span style='color:#aaa;'>"
+                        f"進場前 <b>{s.entry_price:.2f}</b> → "
+                        f"最新 <b>{s.current_price:.2f}</b></span> "
+                        f"<b style='color:{drop_color};'>"
+                        f"{drop_emoji} {s.drop_pct:+.2f}%</b>"
+                    )
+                    if s.drop_3d_pct is not None:
+                        d3_color = "#3dbd6e" if s.drop_3d_pct < 0 else "#e55353"
+                        price_line += (
+                            f" <span style='color:#888;font-size:11px;'>"
+                            f"(3 日 <b style='color:{d3_color};'>"
+                            f"{s.drop_3d_pct:+.2f}%</b>)</span>"
+                        )
                 st.markdown(
                     f"<div style='padding:6px 10px; margin:4px 0;"
                     f" background:{bg}; border-radius:6px;"
@@ -826,10 +855,83 @@ def render_market_sidebar():
                     f"<span style='color:#888;'>"
                     f"{s.measure}（揭示 {interval_str}）｜ "
                     f"原因：{s.reason[:25]}</span>"
+                    f"{price_line}"
                     f"</div>",
                     unsafe_allow_html=True,
                 )
-        st.caption("資料源：TWSE 處置公告 ｜ 10 分鐘 cache")
+        st.caption("資料源：TWSE 處置公告 + price_cache ｜ 10 分鐘 cache")
+
+        # === 假設驗證：「處置 3 日內下跌 → 後續勝率高」===
+        st.divider()
+        st.markdown("**🔬 假設驗證**")
+        st.caption(
+            "「處置 3 日內已下跌 ≥ 3% → 第 3 日收盤買進 → "
+            "後續 5/10/20 日勝率較高？」"
+        )
+        if st.button("跑驗證", key="disposal_verify",
+                      use_container_width=True):
+            with st.spinner("計算中…"):
+                try:
+                    res = disposal.verify_hypothesis(
+                        drop_threshold_pct=-3.0,
+                        forward_days_list=(5, 10, 20),
+                    )
+                except Exception as _e:
+                    res = None
+                    st.error(f"驗證失敗：{_e}")
+            if res:
+                n_total = res.get("n_total", 0)
+                n_q = res.get("n_qualified", 0)
+                db_n = disposal.db_event_count()
+                st.caption(
+                    f"處置股總數: {n_total} ｜ "
+                    f"符合「3 日跌 ≥ 3%」: **{n_q}** ｜ "
+                    f"DB 累積: {db_n}"
+                )
+                if n_q == 0:
+                    st.info(res.get("note", "無符合條件的標的"))
+                else:
+                    for fd, stats in res.get("by_forward", {}).items():
+                        if stats.get("n", 0) == 0:
+                            st.markdown(
+                                f"- **{fd} 日**：N=0 _不足_")
+                            continue
+                        wr = stats.get("win_rate", 0)
+                        wr_icon = ("🏆" if wr > 60
+                                    else "✅" if wr > 50 else "⚠️")
+                        st.markdown(
+                            f"- **+{fd} 日**：N={stats['n']} ｜ "
+                            f"勝率 {wr_icon} **{wr:.0f}%** ｜ "
+                            f"平均 **{stats['avg']:+.2f}%** ｜ "
+                            f"中位 {stats['median']:+.2f}% ｜ "
+                            f"範圍 {stats['worst']:+.1f}% ~ "
+                            f"{stats['best']:+.1f}%"
+                        )
+                    max_n = max(s.get("n", 0)
+                                for s in res.get("by_forward", {}).values())
+                    if max_n < 30:
+                        st.warning(
+                            f"⚠️ 樣本 N={max_n} 過少，**統計上無意義**。"
+                            "系統每天 snapshot，累積 30+ 後再看"
+                        )
+                    with st.expander("📋 逐檔明細"):
+                        import pandas as _pd
+                        rows = []
+                        for d in res.get("details", []):
+                            row = {
+                                "代號": d["code"], "名稱": d["name"],
+                                "處置起": d["start_date"],
+                                "進場前": d.get("entry_price"),
+                                "3日跌幅%": d.get("drop_3d_pct"),
+                                "Day-3 買": d.get("buy_price_day3"),
+                            }
+                            for fd, r in d.get("forward", {}).items():
+                                row[f"+{fd}日%"] = r
+                            rows.append(row)
+                        if rows:
+                            st.dataframe(_pd.DataFrame(rows),
+                                          use_container_width=True,
+                                          hide_index=True)
 
     # === 📨 Telegram 每日報告 ===
     if telegram_notify.is_configured():

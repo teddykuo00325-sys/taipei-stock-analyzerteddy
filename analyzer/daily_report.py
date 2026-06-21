@@ -316,34 +316,63 @@ def _section_picks(top_n: int = 5) -> str:
 
 
 def _section_disposal() -> str:
-    """處置股名單 (20 分鐘揭示，剛進處置 ≤3 日 或 即將開始).
+    """處置股名單 (20 分鐘揭示，剛進處置 ≤3 日 或 即將開始) + 跌幅 + 驗證.
 
     僅 **私人版本** 推送顯示。資料源：TWSE openapi/announcement/punish.
     """
     try:
         stocks = disposal.recent_disposals(
             max_days_in=3,
-            interval_filter=20,         # 20 分鐘揭示（第一次處置）
-            include_upcoming=True,      # 包含即將開始
+            interval_filter=20,
+            include_upcoming=True,
         )
+        stocks = disposal.with_price_data(stocks)
     except Exception:
         return ""
+    fallback_used = False
     if not stocks:
-        # 若無 20 分 + 剛進，退而求其次顯示全部處置中的近期變動
         try:
-            fallback = disposal.recent_disposals(
+            stocks = disposal.recent_disposals(
                 max_days_in=3, interval_filter=None,
                 include_upcoming=True,
             )
+            stocks = disposal.with_price_data(stocks)
+            fallback_used = True
         except Exception:
-            fallback = []
-        if not fallback:
-            return ""
-        header = ("\n🚨 <b>處置股名單 — 暫無 20 分鐘剛進處置者</b>\n"
-                  "   <i>近 3 日其他揭示間隔的處置股（5 分 / 逐筆）：</i>")
-        return header + "\n" + disposal.format_for_tg(
-            fallback, header=False, max_n=5)
-    return disposal.format_for_tg(stocks)
+            stocks = []
+    if not stocks:
+        return ""
+
+    if fallback_used:
+        body = ("\n🚨 <b>處置股名單 — 暫無 20 分鐘剛進處置者</b>\n"
+                "   <i>近 3 日其他揭示間隔的處置股：</i>\n"
+                + disposal.format_for_tg(stocks, header=False, max_n=5))
+    else:
+        body = disposal.format_for_tg(stocks)
+
+    # 加上「處置 3 日跌 → 後續勝率」驗證一行
+    try:
+        verify = disposal.verify_hypothesis(
+            drop_threshold_pct=-3.0, forward_days_list=(5, 10))
+        n_q = verify.get("n_qualified", 0)
+        n_total = verify.get("n_total", 0)
+        if n_q > 0:
+            stats_5 = verify.get("by_forward", {}).get(5, {})
+            stats_10 = verify.get("by_forward", {}).get(10, {})
+            n5 = stats_5.get("n", 0)
+            sig_warn = " ⚠️ 樣本不足" if n5 < 30 else ""
+            verify_line = (
+                f"\n   <b>🔬 假設驗證</b>（3 日跌 ≥ 3% → Day-3 買進）{sig_warn}"
+                f"\n   N={n_q}/{n_total} ｜ "
+                f"+5 日 勝率 <b>{stats_5.get('win_rate', 0):.0f}%</b> "
+                f"平均 <b>{stats_5.get('avg', 0):+.2f}%</b> ｜ "
+                f"+10 日 勝率 <b>{stats_10.get('win_rate', 0):.0f}%</b> "
+                f"平均 <b>{stats_10.get('avg', 0):+.2f}%</b>"
+            )
+            body += verify_line
+    except Exception:
+        pass
+    return body
 
 
 def _section_capital_allocation() -> str:
@@ -706,6 +735,12 @@ def send_daily_report(top_n: int = 5,
         若 TELEGRAM_CHAT_ID_PRIVATE 未設定，私人部分跳過。
     """
     import os as _os
+
+    # === Phase 0: 處置股快照（累積 disposal_history.db 給長期驗證用）===
+    try:
+        disposal.snapshot_today()
+    except Exception:
+        pass
 
     # === Phase 2: 結算到期 sessions（在算 track record 之前） ===
     expired_log = []

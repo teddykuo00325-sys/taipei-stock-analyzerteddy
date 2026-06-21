@@ -44,6 +44,12 @@ class DisposalStock:
     interval_min: int             # 揭示間隔分鐘 (20/5/0=逐筆)
     days_in: int                  # 處置第 N 日（1-based；未開始=0）
     days_remaining: int           # 剩餘日數
+    # 價格資料（with_price_data 填）
+    entry_price: float | None = None       # 處置開始前一交易日收盤
+    current_price: float | None = None     # 最新收盤
+    price_3d_after: float | None = None    # 處置開始後第 3 交易日收盤
+    drop_pct: float | None = None          # (current - entry) / entry %
+    drop_3d_pct: float | None = None       # (price_3d_after - entry) / entry %
 
 
 def _parse_roc_date(s: str) -> date | None:
@@ -202,7 +208,7 @@ def recent_disposals(
 def format_for_tg(stocks: list[DisposalStock],
                    header: bool = True,
                    max_n: int = 10) -> str:
-    """TG 私人訊息用格式 (HTML).
+    """TG 私人訊息用格式 (HTML)，含跌幅資訊（如果 with_price_data 跑過）.
 
     Returns '' 若無資料。
     """
@@ -225,9 +231,22 @@ def format_for_tg(stocks: list[DisposalStock],
                       f"({s.start_date.isoformat()} → "
                       f"{s.end_date.isoformat()})")
         reason_short = s.reason[:30] if s.reason else "—"
+        # 跌幅 line（如果有資料）
+        drop_line = ""
+        if s.entry_price and s.current_price:
+            drop_emoji = "📉" if (s.drop_pct or 0) < 0 else "📈"
+            drop_line = (
+                f"\n     {drop_emoji} 進場前 {s.entry_price:.2f} → "
+                f"最新 {s.current_price:.2f} "
+                f"<b>({s.drop_pct:+.2f}%)</b>"
+            )
+            if s.drop_3d_pct is not None:
+                drop_line += (
+                    f" ｜ 3 日內 <b>{s.drop_3d_pct:+.2f}%</b>"
+                )
         lines.append(
             f"   • <b>{s.code} {s.name}</b>\n"
-            f"     {status}\n"
+            f"     {status}{drop_line}\n"
             f"     <i>原因：{reason_short}</i>"
         )
     remaining = len(stocks) - max_n
@@ -237,7 +256,7 @@ def format_for_tg(stocks: list[DisposalStock],
 
 
 def to_dataframe(stocks: list[DisposalStock]):
-    """Web 用 DataFrame."""
+    """Web 用 DataFrame（含價格資料如果 with_price_data 跑過）."""
     import pandas as pd
     today = date.today()
     rows = []
@@ -252,8 +271,270 @@ def to_dataframe(stocks: list[DisposalStock]):
             "處置迄": s.end_date.isoformat(),
             "剩餘日": s.days_remaining,
             "揭示間隔": f"{s.interval_min} 分" if s.interval_min > 0 else "逐筆",
+            "進場前收": s.entry_price,
+            "3日後收": s.price_3d_after,
+            "最新收": s.current_price,
+            "3日跌幅%": s.drop_3d_pct,
+            "累計跌幅%": s.drop_pct,
             "處置原因": s.reason,
             "處置等級": s.measure,
             "公告日": s.announce_date.isoformat(),
         })
     return pd.DataFrame(rows)
+
+
+# ============================================================
+# 價格比較 — 處置開始前 vs 開始 3 日後 vs 最新
+# ============================================================
+def with_price_data(stocks: list[DisposalStock]) -> list[DisposalStock]:
+    """為每個處置股補上價格資料.
+
+    entry_price = 處置開始日「前一交易日」收盤（基準）
+    price_3d_after = 處置開始日 + 3 個交易日收盤
+    current_price = 最新收盤
+    """
+    from . import price_cache
+    import pandas as pd
+    for s in stocks:
+        try:
+            df = price_cache._load(s.code)
+            if df is None or df.empty:
+                continue
+            # entry: 處置開始前的最後一個交易日
+            entry_mask = df.index < pd.Timestamp(s.start_date)
+            if entry_mask.any():
+                s.entry_price = float(df.loc[entry_mask, "close"].iloc[-1])
+            # current: 最新
+            s.current_price = float(df["close"].iloc[-1])
+            # 3-day after start: 處置開始當日 + 後 2 個交易日 = 第 3 個交易日
+            after_mask = df.index >= pd.Timestamp(s.start_date)
+            after = df.loc[after_mask]
+            if len(after) >= 3:
+                s.price_3d_after = float(after["close"].iloc[2])
+            # 計算跌幅
+            if s.entry_price and s.entry_price > 0:
+                if s.current_price:
+                    s.drop_pct = (s.current_price / s.entry_price - 1) * 100
+                if s.price_3d_after:
+                    s.drop_3d_pct = (
+                        s.price_3d_after / s.entry_price - 1) * 100
+        except Exception:
+            continue
+    return stocks
+
+
+def dropped_during_disposal(
+    stocks: list[DisposalStock],
+    threshold_pct: float = -3.0,
+) -> list[DisposalStock]:
+    """篩出處置 3 日內已下跌 ≤ threshold_pct% 的標的.
+
+    threshold_pct = -3.0 → 跌幅 ≥ 3% 才入選
+    """
+    return [
+        s for s in stocks
+        if s.drop_3d_pct is not None and s.drop_3d_pct <= threshold_pct
+    ]
+
+
+# ============================================================
+# 假設驗證 — 「處置 3 日內下跌 → 後續勝率高」
+# ============================================================
+def verify_hypothesis(
+    drop_threshold_pct: float = -3.0,
+    forward_days_list: tuple = (5, 10, 20),
+    min_days_after_start: int = 3,
+) -> dict:
+    """驗證「處置 3 日內下跌 X% → 後續 N 日勝率高」假設.
+
+    方法：
+      1. 取所有 fetch_all() 的處置股
+      2. 用 K 線算 entry_price, price_3d_after
+      3. 篩 drop_3d_pct ≤ drop_threshold_pct 的（已跌超過門檻）
+      4. 假設「day_3 收盤買進」，看 forward_days_list 後的報酬
+      5. 計算 hit rate / avg return / vs TWII
+
+    回傳：
+      {
+        "n_total": 全部處置股數,
+        "n_qualified": 跌幅符合條件數,
+        "by_forward": {
+            5: {"n":..., "win_rate":..., "avg":..., "best":..., "worst":...},
+            10: {...},
+            20: {...},
+        },
+        "details": [...]   逐檔列表
+      }
+    """
+    from . import price_cache
+    import pandas as pd
+
+    stocks = with_price_data(fetch_all())
+    qualified = [s for s in stocks
+                 if s.drop_3d_pct is not None
+                 and s.drop_3d_pct <= drop_threshold_pct]
+    if not qualified:
+        return {
+            "n_total": len(stocks),
+            "n_qualified": 0,
+            "by_forward": {},
+            "details": [],
+            "note": (f"目前無「處置 3 日內跌 ≥ {abs(drop_threshold_pct):.1f}%」"
+                     f"的標的（含歷史 {len(stocks)} 筆）"),
+        }
+
+    details = []
+    by_forward: dict = {fd: {"rets": []} for fd in forward_days_list}
+
+    for s in qualified:
+        try:
+            df = price_cache._load(s.code)
+            if df is None or df.empty:
+                continue
+            after_mask = df.index >= pd.Timestamp(s.start_date)
+            after = df.loc[after_mask]
+            if len(after) < min_days_after_start:
+                continue
+            buy_price = float(after["close"].iloc[min_days_after_start - 1])
+            row = {
+                "code": s.code, "name": s.name,
+                "start_date": s.start_date.isoformat(),
+                "entry_price": s.entry_price,
+                "drop_3d_pct": s.drop_3d_pct,
+                "buy_price_day3": buy_price,
+                "forward": {},
+            }
+            for fd in forward_days_list:
+                idx = (min_days_after_start - 1) + fd
+                if len(after) <= idx:
+                    row["forward"][fd] = None
+                    continue
+                sell_price = float(after["close"].iloc[idx])
+                ret = (sell_price / buy_price - 1) * 100
+                row["forward"][fd] = round(ret, 2)
+                by_forward[fd]["rets"].append(ret)
+            details.append(row)
+        except Exception:
+            continue
+
+    # 彙總統計
+    result_by_fd = {}
+    for fd, data in by_forward.items():
+        rets = data["rets"]
+        if not rets:
+            result_by_fd[fd] = {"n": 0}
+            continue
+        wins = sum(1 for r in rets if r > 0)
+        result_by_fd[fd] = {
+            "n": len(rets),
+            "win_rate": round(wins / len(rets) * 100, 1),
+            "avg": round(sum(rets) / len(rets), 2),
+            "best": round(max(rets), 2),
+            "worst": round(min(rets), 2),
+            "median": round(sorted(rets)[len(rets) // 2], 2),
+        }
+
+    return {
+        "n_total": len(stocks),
+        "n_qualified": len(qualified),
+        "by_forward": result_by_fd,
+        "details": details,
+    }
+
+
+# ============================================================
+# 歷史快照 DB — 累積處置事件供長期驗證
+# ============================================================
+def _snapshot_db_path():
+    from pathlib import Path
+    p = Path(__file__).parent.parent / "data" / "disposal_history.db"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def _ensure_db():
+    import sqlite3
+    p = _snapshot_db_path()
+    c = sqlite3.connect(p)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS disposal_event (
+            code TEXT NOT NULL,
+            name TEXT,
+            start_date TEXT NOT NULL,
+            end_date TEXT NOT NULL,
+            announce_date TEXT,
+            measure TEXT,
+            interval_min INTEGER,
+            reason TEXT,
+            first_seen TEXT NOT NULL,
+            last_seen TEXT NOT NULL,
+            PRIMARY KEY (code, start_date)
+        )
+    """)
+    c.commit()
+    return c
+
+
+def snapshot_today() -> dict:
+    """把今日 fetch_all() 結果記進 DB（idempotent，重複 snapshot 只更新 last_seen）.
+
+    每天 GH Actions 跑一次即可累積歷史。
+    """
+    stocks = fetch_all()
+    if not stocks:
+        return {"saved": 0, "new": 0, "updated": 0}
+    today_str = date.today().isoformat()
+    new_count = 0
+    updated_count = 0
+    c = _ensure_db()
+    try:
+        for s in stocks:
+            existing = c.execute(
+                "SELECT 1 FROM disposal_event "
+                "WHERE code=? AND start_date=?",
+                (s.code, s.start_date.isoformat()),
+            ).fetchone()
+            if existing:
+                c.execute(
+                    "UPDATE disposal_event SET last_seen=? "
+                    "WHERE code=? AND start_date=?",
+                    (today_str, s.code, s.start_date.isoformat()),
+                )
+                updated_count += 1
+            else:
+                c.execute(
+                    "INSERT INTO disposal_event "
+                    "(code, name, start_date, end_date, announce_date, "
+                    " measure, interval_min, reason, first_seen, last_seen) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    (s.code, s.name, s.start_date.isoformat(),
+                     s.end_date.isoformat(),
+                     s.announce_date.isoformat(),
+                     s.measure, s.interval_min, s.reason,
+                     today_str, today_str),
+                )
+                new_count += 1
+        c.commit()
+    finally:
+        c.close()
+    return {
+        "saved": len(stocks),
+        "new": new_count,
+        "updated": updated_count,
+    }
+
+
+def db_event_count() -> int:
+    """DB 內已累積的處置事件數（用於統計顯著性判斷）."""
+    import sqlite3
+    p = _snapshot_db_path()
+    if not p.exists():
+        return 0
+    c = sqlite3.connect(p)
+    try:
+        return c.execute(
+            "SELECT COUNT(*) FROM disposal_event").fetchone()[0]
+    except Exception:
+        return 0
+    finally:
+        c.close()
