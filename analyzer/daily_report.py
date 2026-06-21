@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 
-from . import (backtest_filter, dca_alert, etf, etf_scraper, etf_signal,
-               marketdata, performance, realbacktest, screener,
+from . import (backtest_filter, dca_alert, disposal, etf, etf_scraper,
+               etf_signal, marketdata, performance, realbacktest, screener,
                telegram_notify, us_market)
 
 
@@ -313,6 +313,37 @@ def _section_picks(top_n: int = 5) -> str:
     else:
         lines.append(f"\n🚫 <b>做空：</b>{rep_s.skip_reason}")
     return "\n".join(lines)
+
+
+def _section_disposal() -> str:
+    """處置股名單 (20 分鐘揭示，剛進處置 ≤3 日 或 即將開始).
+
+    僅 **私人版本** 推送顯示。資料源：TWSE openapi/announcement/punish.
+    """
+    try:
+        stocks = disposal.recent_disposals(
+            max_days_in=3,
+            interval_filter=20,         # 20 分鐘揭示（第一次處置）
+            include_upcoming=True,      # 包含即將開始
+        )
+    except Exception:
+        return ""
+    if not stocks:
+        # 若無 20 分 + 剛進，退而求其次顯示全部處置中的近期變動
+        try:
+            fallback = disposal.recent_disposals(
+                max_days_in=3, interval_filter=None,
+                include_upcoming=True,
+            )
+        except Exception:
+            fallback = []
+        if not fallback:
+            return ""
+        header = ("\n🚨 <b>處置股名單 — 暫無 20 分鐘剛進處置者</b>\n"
+                  "   <i>近 3 日其他揭示間隔的處置股（5 分 / 逐筆）：</i>")
+        return header + "\n" + disposal.format_for_tg(
+            fallback, header=False, max_n=5)
+    return disposal.format_for_tg(stocks)
 
 
 def _section_capital_allocation() -> str:
@@ -649,6 +680,9 @@ def build_private_addendum() -> str:
     ca = _section_capital_allocation()
     if ca:
         parts.append(ca)
+    disp = _section_disposal()
+    if disp:
+        parts.append(disp)
     parts.append(
         "\n━━━━━━━━━━━━━━━━━━━\n"
         "<i>🔒 僅本人可見 ｜ 不送公開 channel</i>"

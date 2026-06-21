@@ -9,8 +9,8 @@ import streamlit as st
 import logging
 
 from analyzer import (backtest_filter, broker, broker_history, chart,
-                      daily_report, data, diagnosis, etf, etf_scraper,
-                      granville, indicators, industry, live,
+                      daily_report, data, diagnosis, disposal, etf,
+                      etf_scraper, granville, indicators, industry, live,
                       margin_history, marketdata, moneyflow, performance,
                       price_cache, realbacktest, revenue, schools, screener,
                       shareholders, storage, targets, telegram_notify,
@@ -769,6 +769,67 @@ def render_market_sidebar():
                         f"</span>",
                         unsafe_allow_html=True,
                     )
+
+    # === 🚨 處置股名單（20 分鐘揭示，剛進處置 / 即將開始）===
+    with st.sidebar.expander("🚨 處置股 (20分揭示・剛進 ≤3 日)",
+                              expanded=False):
+        st.caption(
+            "📌 第一次處置 = 每 20 分鐘揭示成交資訊；"
+            "剛進或即將開始的標的流動性風險最大"
+        )
+        # 寬鬆度切換
+        show_all = st.toggle(
+            "顯示所有揭示間隔（含 5 分 / 逐筆）",
+            value=False,
+            key="disposal_show_all",
+            help="關 = 只看 20 分（第一次處置）；開 = 全部含 5 分（第二次）",
+        )
+        max_days = st.slider(
+            "處置開始幾日內（剛進 = 1）", 1, 10, 3,
+            key="disposal_max_days",
+        )
+        try:
+            stocks = disposal.recent_disposals(
+                max_days_in=max_days,
+                interval_filter=None if show_all else 20,
+                include_upcoming=True,
+            )
+        except Exception as _e:
+            stocks = []
+            st.caption(f"⚠️ 抓取失敗：{_e}")
+        if not stocks:
+            st.info(
+                f"目前無符合條件的標的"
+                + ("（試試「顯示所有揭示間隔」）" if not show_all else "")
+            )
+        else:
+            st.caption(f"共 {len(stocks)} 檔")
+            import datetime as _dt_d
+            today = _dt_d.date.today()
+            for s in stocks:
+                if s.start_date > today:
+                    days_until = (s.start_date - today).days
+                    status_text = f"⏳ {days_until} 日後開始"
+                    bg = "rgba(255,193,7,0.18)"  # 黃 - 即將
+                else:
+                    status_text = f"📅 第 {s.days_in} 日"
+                    bg = "rgba(229,83,83,0.18)"  # 紅 - 已開始
+                interval_str = (f"{s.interval_min} 分"
+                                if s.interval_min > 0 else "逐筆")
+                st.markdown(
+                    f"<div style='padding:6px 10px; margin:4px 0;"
+                    f" background:{bg}; border-radius:6px;"
+                    f" font-size:12px; line-height:1.5;'>"
+                    f"<b style='font-size:13px;'>{s.code} {s.name}</b><br>"
+                    f"{status_text} ｜ {s.start_date.isoformat()} → "
+                    f"{s.end_date.isoformat()}<br>"
+                    f"<span style='color:#888;'>"
+                    f"{s.measure}（揭示 {interval_str}）｜ "
+                    f"原因：{s.reason[:25]}</span>"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+        st.caption("資料源：TWSE 處置公告 ｜ 10 分鐘 cache")
 
     # === 📨 Telegram 每日報告 ===
     if telegram_notify.is_configured():
