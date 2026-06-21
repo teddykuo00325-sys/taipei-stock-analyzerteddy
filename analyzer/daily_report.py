@@ -9,8 +9,8 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 
 from . import (backtest_filter, dca_alert, etf, etf_scraper, etf_signal,
-               marketdata, realbacktest, screener, telegram_notify,
-               us_market)
+               marketdata, performance, realbacktest, screener,
+               telegram_notify, us_market)
 
 
 # 台北時區 (UTC+8) — 確保 GitHub Actions / 雲端 cron 跑時用台灣時間
@@ -318,6 +318,9 @@ def _section_picks(top_n: int = 5) -> str:
 def _section_capital_allocation() -> str:
     """資金配置建議 — 依當前 regime + Lv4 capital_scale + 推薦檔數.
 
+    ★ 資金規模追蹤累積：若 Track Record 已有資料，base_capital 從
+    100 萬 × (1 + 累積淨報酬) 計算，反映「跟隨系統至今實際資金」。
+
     依賴 _LAST_PICKS 緩存（_section_picks 跑過後才有資料）。
     僅 **私人版本** 推送顯示，不走公開 channel。
     """
@@ -327,9 +330,21 @@ def _section_capital_allocation() -> str:
         r = backtest_filter.detect_regime()
     except Exception:
         return ""
-    base_capital = 1_000_000  # 假設帳戶 100 萬
+    # ★ 累積資金追蹤 — 從 performance.summary_kpis 拿累積淨報酬
+    base_capital = 1_000_000
+    cap_note = "起始 100 萬"
+    try:
+        kpi = performance.summary_kpis(initial_capital=1.0)
+        if kpi and kpi.get("n_holdings", 0) > 0:
+            net_ret = kpi.get("total_return_net_pct", 0)
+            new_base = 1_000_000 * (1 + net_ret / 100)
+            cap_note = (f"跟系統累積至今 ≈ <b>{new_base/10000:.1f} 萬</b> "
+                        f"(原 100 萬 → 淨 {net_ret:+.2f}%)")
+            base_capital = new_base
+    except Exception:
+        pass
     lines = [f"\n💵 <b>資金配置建議</b>（依當前 regime 動態）"]
-    lines.append(f"   大盤：{r.label_zh}　基準資金 100 萬")
+    lines.append(f"   大盤：{r.label_zh}　基準資金：{cap_note}")
 
     for side, zh, emoji in (("long", "做多", "🚀"), ("short", "做空", "🐻")):
         proceed = _LAST_PICKS.get(f"{side}_proceed")
@@ -358,7 +373,13 @@ def _section_capital_allocation() -> str:
 
 
 def _section_track_record() -> str:
-    """系統累積績效 — 7 / 30 日 / all-time，僅看 TG 自動 lock 的 closed sessions."""
+    """系統累積績效 — 7 / 30 日 / all-time，僅看 TG 自動 lock 的 closed sessions.
+
+    新增：
+    - vs TWII Alpha 對照（同期間加權指數）
+    - Sharpe / Profit Factor 風險調整
+    - 統計顯著性警示（N<30 標 ⚠️）
+    """
     rows = []
     for days, label in [(7, "過去 7 日"), (30, "過去 30 日"),
                          (None, "累積全期")]:
@@ -369,11 +390,53 @@ def _section_track_record() -> str:
         if not tr or tr["n_holdings"] == 0:
             rows.append(f"   {label}：<i>累積中</i>")
             continue
+        # 統計顯著性符號
+        n = tr["n_holdings"]
+        sig_mark = "⚠️" if n < 30 else "📊" if n < 100 else "✅"
         rows.append(
-            f"   {label}：命中 <b>{tr['win']}/{tr['n_holdings']}</b> "
+            f"   {label}：命中 <b>{tr['win']}/{n}</b> "
             f"({tr['win_rate']:.0f}%) ｜ 平均 <b>{tr['avg_return_pct']:+.2f}%</b>"
-            f" ｜ 最佳 {tr['best']:+.1f}% / 最差 {tr['worst']:+.1f}%"
+            f" ｜ 最佳 {tr['best']:+.1f}% / 最差 {tr['worst']:+.1f}% {sig_mark}"
         )
+
+    # ★ 累積期 alpha vs TWII + Sharpe / PF（只在有資料時顯示）
+    extra_lines = []
+    try:
+        kpi = performance.summary_kpis(initial_capital=1.0)
+        if kpi and kpi.get("n_holdings", 0) > 0:
+            sys_net = kpi.get("total_return_net_pct", 0)
+            # 同期 TWII
+            first = kpi.get("first_date")
+            last = kpi.get("last_date")
+            twii_ret = None
+            if first and last:
+                bench = performance.twii_benchmark(first, last)
+                if not bench.empty:
+                    twii_ret = (float(bench["twii_norm"].iloc[-1]) - 1) * 100
+            alpha_str = ""
+            if twii_ret is not None:
+                alpha = sys_net - twii_ret
+                alpha_icon = "🔴" if alpha > 0 else "🟢"
+                alpha_str = (f"\n   {alpha_icon} 累積 vs TWII：系統 "
+                             f"<b>{sys_net:+.2f}%</b> ｜ "
+                             f"TWII {twii_ret:+.2f}% ｜ "
+                             f"Alpha <b>{alpha:+.2f}%</b>")
+            else:
+                alpha_str = (f"\n   📈 累積淨報酬：<b>{sys_net:+.2f}%</b>")
+            extra_lines.append(alpha_str)
+            # 風險調整
+            sharpe = kpi.get("sharpe", 0)
+            pf = kpi.get("profit_factor", 0)
+            pf_str = f"{pf:.2f}" if pf != float("inf") else "∞"
+            sharpe_icon = "🏆" if sharpe > 1.0 else "⚠️" if sharpe > 0 else "❌"
+            extra_lines.append(
+                f"   {sharpe_icon} Sharpe <b>{sharpe:.2f}</b> ｜ "
+                f"Profit Factor <b>{pf_str}</b> ｜ "
+                f"最長連虧 {kpi.get('max_consec_loss', 0)} 次"
+            )
+    except Exception:
+        pass
+
     # 若三個全 "累積中" → 顯示首次啟動說明
     all_empty = all("累積中" in r for r in rows)
     header = "📊 <b>系統 Track Record</b>（自動追蹤、無人為干預）"
@@ -382,7 +445,10 @@ def _section_track_record() -> str:
                 + "\n".join(rows)
                 + "\n   <i>📝 5 日後首批 session 結算，"
                 + "30 個交易日後數字才有統計意義</i>")
-    return f"\n{header}\n" + "\n".join(rows)
+    result = f"\n{header}\n" + "\n".join(rows)
+    if extra_lines:
+        result += "\n" + "\n".join(extra_lines)
+    return result
 
 
 def _section_realbacktest() -> str:

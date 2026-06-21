@@ -245,6 +245,82 @@ def max_drawdown(equity: pd.Series, dates: pd.Series) -> Drawdown:
 
 
 # ============================================================
+# 風險調整指標 (Sharpe / Sortino / Profit Factor)
+# ============================================================
+RISK_FREE_ANNUAL = 0.02   # 台灣 1 年期定存約 1.5-2%
+TRADES_PER_YEAR_BASE = 50  # 5 日持有平均 ≈ 50 趟/年（用於年化）
+
+
+def risk_metrics(initial_capital: float = 1.0,
+                  auto_only: bool = True,
+                  use_net: bool = True) -> dict:
+    """計算風險調整指標.
+
+    use_net=True 用淨報酬（扣交易成本，反映真實風險回報）
+
+    Returns dict:
+      sharpe: Sharpe Ratio（年化，越大越好；> 1.0 算好；> 2.0 優秀）
+      sortino: Sortino Ratio（只懲罰下行波動；> 1.5 算好）
+      profit_factor: 毛利 / 毛損（> 1.5 算好；> 2.0 很好）
+      max_consec_loss: 最長連續虧損次數
+      avg_hold_days: 平均持有天數（用於年化）
+      n_trades: 樣本數（< 30 統計上無意義）
+    """
+    h = holdings_df(auto_only=auto_only)
+    if h.empty:
+        return {
+            "sharpe": 0.0, "sortino": 0.0,
+            "profit_factor": 0.0,
+            "max_consec_loss": 0, "avg_hold_days": 0,
+            "n_trades": 0,
+        }
+    col = "return_net_pct" if use_net else "return_pct"
+    returns = h[col].astype(float)
+    avg_hold = float(h["hold_days"].mean()) if "hold_days" in h.columns else 5.0
+    # 年化趟數：250 交易日 / 平均持有日數
+    trades_per_year = 250 / max(avg_hold, 1)
+    rf_per_trade = RISK_FREE_ANNUAL / trades_per_year * 100  # %
+    excess = returns - rf_per_trade
+
+    # Sharpe（年化）
+    std_ret = float(returns.std()) if len(returns) > 1 else 0
+    sharpe = (
+        float(excess.mean()) / std_ret * (trades_per_year ** 0.5)
+        if std_ret > 0 else 0.0
+    )
+    # Sortino — 只用下行波動
+    downside = returns[returns < rf_per_trade]
+    downside_std = float(downside.std()) if len(downside) > 1 else 0
+    sortino = (
+        float(excess.mean()) / downside_std * (trades_per_year ** 0.5)
+        if downside_std > 0 else 0.0
+    )
+    # Profit Factor
+    wins = returns[returns > 0].sum()
+    losses = abs(returns[returns < 0].sum())
+    profit_factor = float(wins / losses) if losses > 0 else float("inf")
+
+    # 最長連續虧損
+    is_loss = (returns <= 0).astype(int).tolist()
+    max_consec = 0
+    cur = 0
+    for x in is_loss:
+        cur = cur + 1 if x else 0
+        max_consec = max(max_consec, cur)
+
+    return {
+        "sharpe": round(sharpe, 2),
+        "sortino": round(sortino, 2),
+        "profit_factor": round(profit_factor, 2)
+                          if profit_factor != float("inf") else float("inf"),
+        "max_consec_loss": max_consec,
+        "avg_hold_days": round(avg_hold, 1),
+        "n_trades": len(returns),
+        "trades_per_year": round(trades_per_year, 1),
+    }
+
+
+# ============================================================
 # 頂部 KPIs
 # ============================================================
 def summary_kpis(initial_capital: float = 1.0,
@@ -278,6 +354,8 @@ def summary_kpis(initial_capital: float = 1.0,
                           - initial_capital) / initial_capital * 100
     win_gross = int((h["return_pct"] > 0).sum())
     win_net = int((h["return_net_pct"] > 0).sum())
+    risk = risk_metrics(initial_capital=initial_capital,
+                        auto_only=auto_only, use_net=True)
     return {
         "n_sessions": h["session_id"].nunique(),
         "n_holdings": len(h),
@@ -293,4 +371,10 @@ def summary_kpis(initial_capital: float = 1.0,
         "max_dd_trough": dd_net.trough_date,
         "first_date": pd.Timestamp(h["lock_date"].min()).strftime("%Y-%m-%d"),
         "last_date": pd.Timestamp(h["exit_date"].max()).strftime("%Y-%m-%d"),
+        # Risk-adjusted（淨）
+        "sharpe": risk["sharpe"],
+        "sortino": risk["sortino"],
+        "profit_factor": risk["profit_factor"],
+        "max_consec_loss": risk["max_consec_loss"],
+        "avg_hold_days": risk["avg_hold_days"],
     }

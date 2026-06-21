@@ -2588,6 +2588,41 @@ elif mode == "📊 系統績效":
         c4.metric("資料區間", f"{kpi.get('first_date', '—')}",
                   f"至 {kpi.get('last_date', '—')}")
 
+        # === 風險調整指標（Sharpe / Sortino / Profit Factor）===
+        st.markdown("##### 📐 風險調整指標（年化、扣交易成本）")
+        rc1, rc2, rc3, rc4 = st.columns(4)
+        sharpe = kpi.get("sharpe", 0)
+        sortino = kpi.get("sortino", 0)
+        pf = kpi.get("profit_factor", 0)
+        consec_loss = kpi.get("max_consec_loss", 0)
+        sharpe_note = ("🏆 優秀" if sharpe > 2.0 else
+                       "✅ 好" if sharpe > 1.0 else
+                       "⚠️ 可" if sharpe > 0 else "❌ 差")
+        sortino_note = ("🏆 優秀" if sortino > 2.0 else
+                        "✅ 好" if sortino > 1.5 else
+                        "⚠️ 可" if sortino > 0 else "❌ 差")
+        pf_note = ("🏆 優秀" if pf > 2.0 else
+                   "✅ 好" if pf > 1.5 else
+                   "⚠️ 普通" if pf > 1.0 else "❌ 賠錢")
+        pf_str = f"{pf:.2f}" if pf != float("inf") else "∞"
+        rc1.metric(
+            "Sharpe Ratio", f"{sharpe:.2f}", sharpe_note,
+            help="風險調整後年化報酬。> 1.0 算好，> 2.0 優秀",
+        )
+        rc2.metric(
+            "Sortino Ratio", f"{sortino:.2f}", sortino_note,
+            help="只懲罰下行波動的 Sharpe 變體。對賺多賠少的策略更友善",
+        )
+        rc3.metric(
+            "Profit Factor", pf_str, pf_note,
+            help="毛利 / 毛損。> 1.5 算好；< 1.0 表示策略賠錢",
+        )
+        rc4.metric(
+            "最長連續虧損", f"{consec_loss} 次",
+            f"平均持有 {kpi.get('avg_hold_days', 0):.1f} 日",
+            help="心理承受度測試 — 連虧多次是否會打死策略信心",
+        )
+
         # ⚠️ 樣本量警示
         n_h = kpi['n_holdings']
         if n_h < 30:
