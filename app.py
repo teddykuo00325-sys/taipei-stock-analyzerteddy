@@ -625,23 +625,12 @@ if _etf_auto_key not in st.session_state:
     except Exception:
         pass
 
-# === 自動每日 Telegram 報告（每天第一次開 app 時，且有設定 TG secrets）===
-_tg_auto_key = f"_tg_dailyreport_{_today_key_dt}"
-if (_tg_auto_key not in st.session_state
-        and telegram_notify.is_configured()):
-    st.session_state[_tg_auto_key] = True
-    try:
-        from concurrent.futures import ThreadPoolExecutor as _Tr
-
-        def _auto_report():
-            try:
-                daily_report.send_daily_report(
-                    top_n=5, auto_fetch_etf=False)  # ETF 已在上面抓過
-            except Exception:
-                pass
-        _Tr(max_workers=1).submit(_auto_report)
-    except Exception:
-        pass
+# === ⚠️ 已移除「app 開啟自動推 TG」邏輯 ===
+# 原因：判斷用 st.session_state，每次重整/新 tab/新裝置都算新 session →
+#       每次都推一遍。今天用戶遭遇 6 則重複推送即此 bug 所致。
+# 替代方案：每日 TG 推送由 GH Actions 08:30 cron-job.org 觸發負責，
+#         本地與 Streamlit Cloud 開 app 不再自動推 TG，避免重複。
+# 若需手動補推：用「📋 實盤回測」mode 的「手動發送今日報告」按鈕（app.py:765）
 # 處理上一輪 rerun 設定的模式切換意圖（必須在 widget 渲染前）
 if "_mode_override" in st.session_state:
     st.session_state.app_mode = st.session_state.pop("_mode_override")
