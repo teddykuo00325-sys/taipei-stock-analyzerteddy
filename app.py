@@ -323,6 +323,26 @@ def render_card(row: pd.Series, rank: int, key_ns: str = "card"):
                f" padding:1px 7px; border-radius:8px; font-size:11px;"
                f" margin-left:6px;'>{ind_name}</span>" if ind_name else "")
 
+    # --- 主動式 ETF 動向 tag ---
+    etf_tag = ""
+    etf_sig = row.get("_etf_signal") if "_etf_signal" in row else None
+    if etf_sig and abs(etf_sig.get("score", 0)) >= 1:
+        score = etf_sig["score"]
+        if score > 0:
+            etf_color = "#e55353"  # 紅
+            etf_icon = "✨"
+        else:
+            etf_color = "#3dbd6e"  # 綠
+            etf_icon = "⚠️"
+        sign = "+" if score > 0 else ""
+        summary = etf_sig.get("summary", "")
+        etf_tag = (
+            f"<span style='background:rgba(255,193,7,0.18); "
+            f"color:{etf_color}; padding:1px 7px; border-radius:8px;"
+            f" font-size:11px; margin-left:6px;' title='{summary}'>"
+            f"{etf_icon} ETF {sign}{score:.1f}</span>"
+        )
+
     # --- 月營收 YoY ---
     rev_text = ""
     try:
@@ -380,7 +400,7 @@ def render_card(row: pd.Series, rank: int, key_ns: str = "card"):
             f"<div style='font-size:13px;'>"
             f"<b style='color:#fafafa;font-size:15px;'>"
             f"#{rank} {_row_name} ({code})</b>"
-            f"{cont}{ind_tag}{time_tag}{rev_text}"
+            f"{cont}{ind_tag}{etf_tag}{time_tag}{rev_text}"
             f"</div>"
             f"<div style='margin:4px 0;display:flex;"
             f"align-items:baseline;gap:10px;'>"

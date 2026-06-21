@@ -28,7 +28,8 @@ def _rename(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _score_one(code: str, name: str, df: pd.DataFrame,
-               min_avg_volume_lots: int) -> dict | None:
+               min_avg_volume_lots: int,
+               etf_signal: dict | None = None) -> dict | None:
     try:
         df = _rename(df).dropna()
         if len(df) < 60:
@@ -90,18 +91,23 @@ def _score_one(code: str, name: str, df: pd.DataFrame,
                 d.entry_zone and d.entry_zone[0] <= float(last["close"])
                 <= d.entry_zone[1]
             ),
-            # tiebreaker 分數（同分時 3 天勝率排序用）
-            "Tiebreak": _compute_tiebreak(dff, d),
+            # tiebreaker 分數（同分時 3 天勝率排序用，含 ETF 動向）
+            "Tiebreak": _compute_tiebreak(dff, d, etf_signal=etf_signal),
+            # 把 ETF signal 也存進 row，供 daily_report / app 顯示用
+            "_etf_signal": etf_signal,
         }
     except Exception:
         return None
 
 
-def _compute_tiebreak(df, diag) -> int:
-    """計算多方 tiebreak（screener 主要用 long-side ranking）."""
+def _compute_tiebreak(df, diag, etf_signal: dict | None = None) -> int:
+    """計算多方 tiebreak（screener 主要用 long-side ranking）.
+
+    etf_signal: 該股在前 5 大主動式 ETF 的動作分數 (第 8 維 H)
+    """
     try:
         from . import tiebreaker
-        return tiebreaker.compute(df, diag).total
+        return tiebreaker.compute(df, diag, etf_signal=etf_signal).total
     except Exception:
         return 0
 
@@ -354,6 +360,15 @@ def screen(
     names = dict(zip(snap["Code"], snap["Name"]))
     total = len(codes)
 
+    # ===== 步驟 0.5：抓主動式 ETF 動作訊號（給 tiebreaker H 維用）=====
+    if progress_cb:
+        progress_cb(0.015, "抓主動式 ETF 動作訊號（新進/加碼/減碼/退出）…")
+    try:
+        from . import etf_signal
+        etf_sig_map = etf_signal.fetch_etf_signal_map(top_etf_n=5)
+    except Exception:
+        etf_sig_map = {}
+
     # ===== 步驟 1：預熱 / 增量更新 price_cache (60% 進度) =====
     def _warm_cb(pct, msg):
         if progress_cb:
@@ -384,7 +399,8 @@ def screen(
             "close": "Close", "volume": "Volume",
         })
         row = _score_one(code, names.get(code, code),
-                         df_upper, min_avg_volume_lots)
+                         df_upper, min_avg_volume_lots,
+                         etf_signal=etf_sig_map.get(code))
         if row:
             results.append(row)
 

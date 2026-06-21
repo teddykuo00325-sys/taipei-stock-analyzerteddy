@@ -129,6 +129,15 @@ def main() -> int:
         print("❌ TELEGRAM_CHAT_ID 未設定", file=sys.stderr)
         return 1
 
+    # 0.5) 週末跳過推送 — 市場休市，報告內容跟週五一樣（除非 FORCE_SEND）
+    today_tpe = datetime.now(TPE_TZ)
+    weekday = today_tpe.weekday()  # Monday=0, Sunday=6
+    if weekday >= 5 and os.environ.get("FORCE_SEND") != "1":
+        weekday_zh = "六日"[weekday - 5]
+        print(f"✅ 今天是星期{weekday_zh}（市場休市），跳過推送 "
+              f"({today_tpe.strftime('%Y-%m-%d %H:%M')} TPE)")
+        return 0
+
     # 1) 去重檢查：今日已發過就跳過（除非 FORCE_SEND=1）
     if os.environ.get("FORCE_SEND") != "1":
         if _already_sent_today():

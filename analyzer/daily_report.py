@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 
-from . import (backtest_filter, dca_alert, etf, etf_scraper,
+from . import (backtest_filter, dca_alert, etf, etf_scraper, etf_signal,
                marketdata, realbacktest, screener, telegram_notify,
                us_market)
 
@@ -288,8 +288,11 @@ def _section_picks(top_n: int = 5) -> str:
     def _fmt_pick(i: int, p: dict) -> str:
         code = str(p['代號'])
         name = _resolve_name(code, str(p.get('名稱', code)))
+        # 含 ETF 動作標籤（從 _etf_signal 取得）
+        etf_tag = etf_signal.format_signal_for_tg(p.get('_etf_signal'))
         return (f"   {i}. <b>{code} {name}</b>　"
-                f"收 {p['收盤']:.2f}　評分 {p['分數']}")
+                f"收 {p['收盤']:.2f}　評分 {p['分數']}"
+                + etf_tag)
 
     lines = []
     if rep_l.proceed:

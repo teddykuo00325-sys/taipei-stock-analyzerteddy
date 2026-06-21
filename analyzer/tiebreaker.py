@@ -3,12 +3,13 @@
 當主評分系統把多檔股票評為同分（譬如 5+ 檔都是 100 分）時，需要二級
 排序機制來挑「短線勝率最高」的進場標的。
 
-權重（v2，已經過 30 天 27,741 觸發點實證調整）：
+權重（v3，已經過 30 天 27,741 觸發點實證調整 + 加 ETF 動向第 8 維）：
 
-7 個正向維度（總計 +101）：
+8 個正向維度（總計 +113~+128 依 regime）：
   F 短期動能甜蜜點 (+25) ★ 實證勝率 54.6% 最高（昨漲 +1~3%）
   D 不過熱 (+20)            ★ 實證勝率 54.2%、N=13k 最穩定
   B 法人連續買超 (+20)      無歷史回測，依理論保留
+  H 主動 ETF 動向 (±18 max) ★ v3 新增（NEW+15/+INC+8/-DEC-8/OUT-15）
   A 爆量突破 (+10) ↓        實證 48.7%（多頭中追熱反失利）
   G 軋空潛力 (+10)          無歷史回測，依理論保留
   C 動能加速 (+8) ↓         實證 48.7%（多頭中過熱反指標）
@@ -35,14 +36,20 @@ _WEIGHTS = {
     "bull": {  # 強多頭
         "A_max": 10, "B_max": 20, "C_max": 8,  "D_max": 20,
         "E_max": 8,  "F_max": 25, "G_max": 10,
+        # H：ETF 動向 — 強多頭時許多動作已 priced in，權重次要
+        "H_max": 12,
     },
     "bear": {  # 強空頭（A/C 反轉為強訊號）
         "A_max": 20, "B_max": 20, "C_max": 18, "D_max": 10,
         "E_max": 10, "F_max": 12, "G_max": 15,
+        # H：強空頭時 ETF 經理人逆勢加碼/退出是強訊號
+        "H_max": 18,
     },
     "sideways": {  # 整理（介於兩者）
         "A_max": 15, "B_max": 20, "C_max": 12, "D_max": 15,
         "E_max": 10, "F_max": 18, "G_max": 12,
+        # H：整理盤需 alpha 來源，ETF 動向重要
+        "H_max": 15,
     },
 }
 
@@ -54,7 +61,7 @@ def _get_weights(regime: str | None) -> dict:
 
 @dataclass
 class TiebreakDetail:
-    total: int                              # 總分 (-53 ~ +110)
+    total: int                              # 總分 (-68 ~ +128)
     a_breakout: int = 0                     # 爆量突破
     b_institutional: int = 0                # 法人連續買超
     c_momentum: int = 0                     # 動能加速
@@ -62,6 +69,7 @@ class TiebreakDetail:
     e_signal_fresh: int = 0                 # KD/MACD 鮮度
     f_sweet_spot: int = 0                   # 短期動能甜蜜點
     g_short_squeeze: int = 0                # 軋空潛力
+    h_etf_flow: int = 0                     # 主動式 ETF 動向（新增第 8 維）
     penalty: int = 0                        # 反向扣分總和（負數）
     notes: list[str] = field(default_factory=list)
 
@@ -278,12 +286,16 @@ def _compute_penalty(df: pd.DataFrame, diag, notes: list[str]) -> int:
 # 主入口
 # ============================================================
 def compute(df: pd.DataFrame, diag,
-             regime: str | None = None) -> TiebreakDetail:
+             regime: str | None = None,
+             etf_signal: dict | None = None) -> TiebreakDetail:
     """計算 tiebreak 分數.
 
     df: K 線 (含 indicators — ma5/ma10/ma20/k/d/rsi/macd_hist/volume)
     diag: Diagnosis 物件（用 institutional_info / margin_info / candles）
     regime: 'bull' / 'bear' / 'sideways'，None 自動偵測；用於選權重組
+    etf_signal: 該股在前 5 大主動式 ETF 的動作分數
+                {'score': float, 'actions': [...], 'summary': str}
+                None 代表無資料／無動作；用於第 8 維 H
     """
     if df is None or df.empty:
         return TiebreakDetail(total=0)
@@ -319,27 +331,40 @@ def compute(df: pd.DataFrame, diag,
     f = int(round(f_raw * w.get("F_max", 0) / base.get("F", 1))) if f_raw else 0
     g = int(round(g_raw * w.get("G_max", 0) / base.get("G", 1))) if g_raw else 0
     penalty = _compute_penalty(df, diag, notes)
-    total = a + b + c + d + e + f + g + penalty
+    # H：主動式 ETF 動向（第 8 維）— clamp 到 ±H_max
+    h = 0
+    if etf_signal and etf_signal.get("score"):
+        raw_h = float(etf_signal["score"])
+        h_max = w.get("H_max", 0)
+        h = int(round(max(-h_max, min(h_max, raw_h))))
+        if h != 0:
+            summary = etf_signal.get("summary", "")
+            sign = "+" if h > 0 else ""
+            notes.append(f"H 主動 ETF 動向 {sign}{h}（{summary}）")
+    total = a + b + c + d + e + f + g + h + penalty
     if regime != "sideways":
         notes.insert(0, f"[regime={regime} 動態權重]")
     return TiebreakDetail(
         total=total, a_breakout=a, b_institutional=b, c_momentum=c,
         d_not_overheated=d, e_signal_fresh=e, f_sweet_spot=f,
-        g_short_squeeze=g, penalty=penalty, notes=notes,
+        g_short_squeeze=g, h_etf_flow=h, penalty=penalty, notes=notes,
     )
 
 
-def compute_short_side(df: pd.DataFrame, diag) -> TiebreakDetail:
+def compute_short_side(df: pd.DataFrame, diag,
+                       etf_signal: dict | None = None) -> TiebreakDetail:
     """做空版 tiebreak（方向相反）.
 
     對做空候選，理想是「跌破 + 量縮反彈 + 短期已過熱 + 法人賣超」。
     簡化：把多空鏡像處理 — 取多單 tiebreak 的負數，並加做空特有 bonus。
 
-    這版直接用多方 compute 並取負，方便共用邏輯；未來可獨立。
+    etf_signal：對做空也是反向 — ETF 加碼/新進 = 不適合做空（H 扣分）；
+                ETF 退出/減碼 = 適合做空（H 加分）
     """
-    long_score = compute(df, diag)
+    long_score = compute(df, diag, etf_signal=etf_signal)
     # 簡單反向：多單高分 → 不適合做空（分數低）；多單低分 → 適合做空
     # 但 G 軋空 對做空是 risk，要扣
+    # H 對做空亦反向（ETF 加碼 → 不該做空）
     flipped = TiebreakDetail(
         total=-long_score.total - long_score.g_short_squeeze,
         a_breakout=-long_score.a_breakout,
@@ -349,6 +374,7 @@ def compute_short_side(df: pd.DataFrame, diag) -> TiebreakDetail:
         e_signal_fresh=-long_score.e_signal_fresh,
         f_sweet_spot=-long_score.f_sweet_spot,
         g_short_squeeze=-long_score.g_short_squeeze * 2,
+        h_etf_flow=-long_score.h_etf_flow,   # ETF 動向反向
         penalty=long_score.penalty,
         notes=[f"做空版反向計算（基於多方分數 {long_score.total}）"],
     )
