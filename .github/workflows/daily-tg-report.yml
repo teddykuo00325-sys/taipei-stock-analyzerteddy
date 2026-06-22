@@ -51,9 +51,14 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/realbacktest.db data/disposal_history.db
+          # 只加實際存在的 DB（disposal_history.db 首次 run 才會建立）
+          for db in data/realbacktest.db data/disposal_history.db; do
+            if [ -f "$db" ]; then
+              git add "$db"
+            fi
+          done
           if git diff --staged --quiet; then
-            echo "realbacktest / disposal_history 無變動，跳過 commit"
+            echo "DB 無變動，跳過 commit"
             exit 0
           fi
           git commit -m "auto(snapshot): realbacktest+disposal $(TZ=Asia/Taipei date +%Y-%m-%d)"

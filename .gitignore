@@ -13,6 +13,9 @@ data/*.db
 data/*.db-journal
 data/*.db-wal
 data/*.db-shm
+# 但這幾個 DB 需要跨 run 持久化（GH Actions 每日 commit 回 repo）
+!data/realbacktest.db
+!data/disposal_history.db
 
 # 版權書籍（不上傳）
 朱家泓電子書/
