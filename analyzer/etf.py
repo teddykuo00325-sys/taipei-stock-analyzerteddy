@@ -288,9 +288,18 @@ def refresh_aum(candidates: Iterable[str] | None = None,
                 max_age_sec: int = 86400) -> list[EtfMeta]:
     """從候選清單抓 AUM、排序、存 DB.
 
-    yfinance 抓不到時（例如 GitHub Actions / Cloud IP 被 Yahoo 擋），
-    自動 fallback 到 DB 已存的 AUM 快照。
+    雲端 (GITHUB_ACTIONS=true)：直接讀 DB 跳過 yfinance — 避免逐個
+    ETF yf.Ticker.info 在被擋 IP 上卡 30+ 秒 × 20 檔 → 工作流超時.
+
+    yfinance 抓不到時，自動 fallback 到 DB 已存的 AUM 快照。
     """
+    import os as _os
+    if _os.environ.get("GITHUB_ACTIONS") == "true":
+        metas = _load_aum_from_db()
+        _aum_cache["list"] = metas
+        _aum_cache["time"] = time()
+        return metas
+
     now = time()
     if _aum_cache["list"] and now - _aum_cache["time"] < max_age_sec:
         return _aum_cache["list"]

@@ -58,6 +58,9 @@ def _short_etf_name(code: str, raw_name: str) -> str:
 def fetch_etf_signal_map(top_etf_n: int = 5) -> dict[str, dict]:
     """掃描前 N 大主動式 ETF 最近一次 diff，回傳 {stock_code: signal_dict}.
 
+    雲端模式 (GITHUB_ACTIONS=true)：跳過 yfinance 直接用 DB cache 排序
+    避免逐個 ETF yfinance.Ticker.info 卡 60s × 20 檔 → 工作流 30 分鐘超時.
+
     signal_dict 結構：
       {
         "score": float,           # 總分 = Σ(action_base × etf_weight)
@@ -65,8 +68,15 @@ def fetch_etf_signal_map(top_etf_n: int = 5) -> dict[str, dict]:
         "summary": "981A加碼/991A新進",  # 簡短摘要 for TG
       }
     """
+    import os as _os
+    is_cloud = _os.environ.get("GITHUB_ACTIONS") == "true"
     try:
-        metas = etf.top_n(top_etf_n, taiwan_only=True)
+        if is_cloud:
+            # 雲端：直接讀 DB 已存的 AUM 排序，跳過 yfinance.Ticker.info
+            all_metas = etf._load_aum_from_db()
+            metas = [m for m in all_metas if etf.is_taiwan_focused(m)][:top_etf_n]
+        else:
+            metas = etf.top_n(top_etf_n, taiwan_only=True)
     except Exception:
         return {}
     if not metas:
