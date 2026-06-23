@@ -13,6 +13,30 @@ from . import (backtest_filter, dca_alert, disposal, etf, etf_scraper,
                telegram_notify, us_market)
 
 
+def _is_cloud() -> bool:
+    """是否在 GH Actions / Streamlit Cloud 等可能被 Yahoo 限流的環境執行."""
+    import os as _os
+    return (_os.environ.get("GITHUB_ACTIONS") == "true"
+            or _os.environ.get("STREAMLIT_RUNTIME_ENV") == "cloud")
+
+
+def _with_timeout(func, timeout: float = 25, default=None, *args, **kwargs):
+    """在獨立 thread 跑 func，超過 timeout 秒就放棄回 default.
+
+    用於包 yfinance 呼叫 — 因為 curl_cffi 底層忽略 socket.setdefaulttimeout，
+    雲端被擋時會無限 hang。Thread 雖然會繼續跑（無法 kill），但主流程不會卡。
+    """
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError as _TO
+    try:
+        with ThreadPoolExecutor(max_workers=1) as ex:
+            fut = ex.submit(func, *args, **kwargs)
+            return fut.result(timeout=timeout)
+    except _TO:
+        return default
+    except Exception:
+        return default
+
+
 # 台北時區 (UTC+8) — 確保 GitHub Actions / 雲端 cron 跑時用台灣時間
 TPE_TZ = timezone(timedelta(hours=8))
 
@@ -30,7 +54,11 @@ DISCLAIMER = (
 
 
 def _section_regime() -> str:
-    r = backtest_filter.detect_regime()
+    # 包 timeout 防 yfinance hang（^TWII history 雲端被擋會卡死）
+    r = _with_timeout(backtest_filter.detect_regime, timeout=25, default=None)
+    if r is None:
+        return ("📊 <b>大盤 regime</b>：⚪ 偵測失敗（yfinance 超時）\n"
+                "   <i>雲端 IP 被 Yahoo 擋，跳過此段；其他訊號仍正常推送</i>")
     # 額外標記「tiebreaker 動態權重」資訊
     weight_note = {
         "bull":     "強多頭 → tiebreaker 重「不過熱+甜蜜起漲」",
@@ -65,10 +93,11 @@ def _section_dca_alerts() -> str:
 
 def _section_us_market() -> str:
     """🇺🇸 美股關鍵指標 + 巨頭 + 跟台股相關性."""
-    try:
-        data = us_market.fetch_us_market()
-    except Exception:
-        return ""
+    # 包 timeout 防 16 個 yfinance 呼叫 hang 死整個推送
+    data = _with_timeout(us_market.fetch_us_market, timeout=60, default=None)
+    if data is None:
+        return ("\n🇺🇸 <b>美股關鍵指標</b>：⚪ 抓取超時"
+                "（雲端 IP 被 Yahoo 擋，本機 Streamlit 可正常查看）")
     indices = data.get("indices", [])
     giants = data.get("giants", [])
     if not indices and not giants:
@@ -127,10 +156,9 @@ def _section_us_market() -> str:
 def _section_commodities() -> str:
     """國際商品 + 展寬貴金屬牌價."""
     lines: list[str] = []
-    # === 國際商品（yfinance + stooq）===
-    try:
-        intl = marketdata.fetch_international()
-    except Exception:
+    # === 國際商品（yfinance + stooq）— 包 timeout 防 hang ===
+    intl = _with_timeout(marketdata.fetch_international, timeout=30, default={})
+    if intl is None:
         intl = {}
     if intl:
         lines.append("\n💎 <b>國際商品行情</b>")

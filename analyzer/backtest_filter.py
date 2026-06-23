@@ -79,7 +79,20 @@ def detect_regime(as_of_date: str | None = None) -> MarketRegime:
         start = (end.replace(year=end.year - 1)).isoformat()
         # yfinance.history 的 end 是 exclusive，加 1 天緩衝確保包含 end 當天
         end_plus = date.fromordinal(end.toordinal() + 1).isoformat()
-        twii = yf.Ticker("^TWII").history(start=start, end=end_plus)
+        # ★ thread timeout 防 yfinance 雲端 hang（curl_cffi 底層忽略 socket
+        # timeout）。25 秒沒回 → 視為失敗，return 預設 sideways
+        from concurrent.futures import (ThreadPoolExecutor,
+                                          TimeoutError as _TO)
+        with ThreadPoolExecutor(max_workers=1) as _ex:
+            _fut = _ex.submit(
+                lambda: yf.Ticker("^TWII").history(start=start, end=end_plus))
+            try:
+                twii = _fut.result(timeout=25)
+            except _TO:
+                return _ret(MarketRegime(
+                    "sideways", "整理（yfinance 超時）",
+                    0, 0, 0, 0, True, True, 1.0,
+                    "yfinance 25 秒未回應，預設整理"))
         if twii.empty:
             return _ret(MarketRegime(
                 "sideways", "整理（無資料）",
