@@ -18,11 +18,19 @@ from __future__ import annotations
 
 import gzip
 import os
+import socket
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import requests
+
+# ★ 全域 socket timeout — 防止 yfinance 在雲端被 Yahoo 擋時無限 hang
+# 沒設 timeout 時，被擋的 socket read 不會 raise，try/except 永遠接不到，
+# 整個 build_daily_report 卡死 30 分鐘觸發 workflow 超時。
+# 設 30 秒後：所有 socket-level 操作 30 秒沒回應 → raise socket.timeout
+# → 既有 try/except 接住 → 該 section 跳過繼續其他 sections.
+socket.setdefaulttimeout(30)
 
 # 確保 import path 包含 repo 根目錄
 REPO_ROOT = Path(__file__).resolve().parent.parent
