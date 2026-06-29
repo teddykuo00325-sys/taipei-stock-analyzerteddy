@@ -25,16 +25,72 @@ from pathlib import Path
 
 import requests
 
-# ★ 全域 socket timeout — 防止 yfinance 在雲端被 Yahoo 擋時無限 hang
-# 沒設 timeout 時，被擋的 socket read 不會 raise，try/except 永遠接不到，
-# 整個 build_daily_report 卡死 30 分鐘觸發 workflow 超時。
-# 設 30 秒後：所有 socket-level 操作 30 秒沒回應 → raise socket.timeout
-# → 既有 try/except 接住 → 該 section 跳過繼續其他 sections.
+# ★ 強制 line-buffered stdout — 確保每個 print 立即 flush，否則 GH Actions
+# 看不到中間日誌，hang 時無法定位卡在哪
+try:
+    sys.stdout.reconfigure(line_buffering=True)
+except Exception:
+    pass
+
+# ★ 全域 socket timeout（純 Python socket 防護，對 curl_cffi 無效但仍保留）
 socket.setdefaulttimeout(30)
+
+# ★ Monkey-patch yfinance — yfinance 用 curl_cffi 忽略 socket.setdefaulttimeout
+# 全局為 yf.Ticker.history 與 yf.download 加 thread-timeout，凡是雲端被
+# Yahoo 擋的呼叫 25 秒內無回應 → 視為失敗回空 DataFrame，主流程不卡死.
+def _install_yfinance_timeout_patch():
+    try:
+        import yfinance as yf
+        import pandas as pd
+        from concurrent.futures import ThreadPoolExecutor, TimeoutError as _TO
+
+        _TIMEOUT = 25
+
+        _orig_history = yf.Ticker.history
+
+        def _safe_history(self, *args, **kwargs):
+            with ThreadPoolExecutor(max_workers=1) as ex:
+                fut = ex.submit(_orig_history, self, *args, **kwargs)
+                try:
+                    return fut.result(timeout=_TIMEOUT)
+                except _TO:
+                    print(f"[yf-timeout] Ticker.history > {_TIMEOUT}s, "
+                           f"return empty", flush=True)
+                    return pd.DataFrame()
+                except Exception as e:
+                    print(f"[yf-error] Ticker.history: {e}", flush=True)
+                    return pd.DataFrame()
+
+        yf.Ticker.history = _safe_history
+
+        _orig_download = yf.download
+
+        def _safe_download(*args, **kwargs):
+            with ThreadPoolExecutor(max_workers=1) as ex:
+                fut = ex.submit(_orig_download, *args, **kwargs)
+                try:
+                    return fut.result(timeout=_TIMEOUT)
+                except _TO:
+                    print(f"[yf-timeout] yf.download > {_TIMEOUT}s, "
+                           f"return empty", flush=True)
+                    return pd.DataFrame()
+                except Exception as e:
+                    print(f"[yf-error] yf.download: {e}", flush=True)
+                    return pd.DataFrame()
+
+        yf.download = _safe_download
+        print("[yf-patch] installed: history/download → 25s thread-timeout",
+              flush=True)
+    except Exception as e:
+        print(f"[yf-patch] FAILED: {e}", flush=True)
+
 
 # 確保 import path 包含 repo 根目錄
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
+
+# patch 必須在 analyzer 模組被 import 之前執行
+_install_yfinance_timeout_patch()
 
 TPE_TZ = timezone(timedelta(hours=8))
 

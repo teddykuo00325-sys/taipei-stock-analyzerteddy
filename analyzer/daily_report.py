@@ -644,36 +644,48 @@ def build_daily_report(top_n: int = 5,
         f"📅 <b>{ts_full} (星期{weekday_zh}) 台北股市分析器每日報告</b>",
         "━━━━━━━━━━━━━━━━━━━",
     ]
+    # ★ 各 section 加 breadcrumb print 方便雲端 cron debug — 卡哪段一目瞭然
+    import sys as _sys, time as _time
+    def _bc(name):
+        print(f"[build_report] {_time.strftime('%H:%M:%S')} → {name}",
+              flush=True)
     if "track_record" in sections:
-        parts.append(_section_track_record())
+        _bc("track_record"); parts.append(_section_track_record())
     if "capital_allocation" in sections:
+        _bc("capital_allocation")
         sect = _section_capital_allocation()
         if sect:
             parts.append(sect)
     if "regime" in sections:
-        parts.append(_section_regime())
+        _bc("regime"); parts.append(_section_regime())
     if "dca" in sections:
+        _bc("dca")
         sect = _section_dca_alerts()
         if sect:
             parts.append(sect)
     if "us_market" in sections:
+        _bc("us_market")
         sect = _section_us_market()
         if sect:
             parts.append(sect)
     if "commodities" in sections:
+        _bc("commodities")
         sect = _section_commodities()
         if sect:
             parts.append(sect)
     if "picks" in sections:
-        parts.append(_section_picks(top_n=top_n))
+        _bc("picks"); parts.append(_section_picks(top_n=top_n))
     if "backtest" in sections:
+        _bc("backtest")
         sect = _section_realbacktest()
         if sect:
             parts.append(sect)
     if "etf" in sections:
+        _bc("etf")
         sect = _section_etf_changes()
         if sect:
             parts.append(sect)
+    _bc("done")
     # 偵測執行環境：GitHub Actions 設 GITHUB_ACTIONS=true
     import os as _os
     is_cloud = (_os.environ.get("GITHUB_ACTIONS") == "true"
