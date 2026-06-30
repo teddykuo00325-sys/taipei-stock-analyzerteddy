@@ -350,7 +350,13 @@ def screen(
     if pre_filter_lots_today > 0:
         snap = snap[snap["TradeVolume"] >= pre_filter_lots_today * 1000]
     snap = snap.sort_values("TradeVolume", ascending=False).reset_index(drop=True)
-    if limit:
+    # ★ 雲端自動 limit — GH Actions runner 偶爾 5-10x 慢，跑 1200+ 檔
+    # 會超過 60 分鐘 timeout（06-30 實證）. 限前 300 檔（依成交量降序）
+    # 仍涵蓋所有主流股 + 中型熱門，picks 品質影響有限
+    if _is_cloud_dbg and (limit is None or limit > 300):
+        snap = snap.head(300)
+        _sc_bc(f"cloud auto-limit applied: codes={len(snap)} (max 300)")
+    elif limit:
         snap = snap.head(limit)
     _sc_bc(f"pre-filter done, codes={len(snap)}")
 
