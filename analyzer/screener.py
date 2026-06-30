@@ -337,24 +337,37 @@ def screen(
     import os as _os
     if _os.environ.get("GITHUB_ACTIONS") == "true":
         skip_yfinance_warm = True
+    # ★ Cloud breadcrumb — 雲端 cron debug 用，雲端 picks 慢時可定位
+    import os as _osc, time as _tc
+    _is_cloud_dbg = _osc.environ.get("GITHUB_ACTIONS") == "true"
+    def _sc_bc(msg):
+        if _is_cloud_dbg:
+            print(f"[screener] {_tc.strftime('%H:%M:%S')} {msg}", flush=True)
+
+    _sc_bc("universe.snapshot start")
     snap = universe.snapshot()
+    _sc_bc(f"universe.snapshot done, raw={len(snap)}")
     if pre_filter_lots_today > 0:
         snap = snap[snap["TradeVolume"] >= pre_filter_lots_today * 1000]
     snap = snap.sort_values("TradeVolume", ascending=False).reset_index(drop=True)
     if limit:
         snap = snap.head(limit)
+    _sc_bc(f"pre-filter done, codes={len(snap)}")
 
     # 預抓法人 & 融資券 快照（共用快取）
     if progress_cb:
         progress_cb(0.01, "抓取三大法人 & 融資融券快照…")
+    _sc_bc("institutional.snapshot start")
     try:
         institutional.snapshot()
-    except Exception:
-        pass
+    except Exception as e:
+        _sc_bc(f"institutional.snapshot ERR: {str(e)[:60]}")
+    _sc_bc("margin.snapshot start")
     try:
         margin.snapshot()
-    except Exception:
-        pass
+    except Exception as e:
+        _sc_bc(f"margin.snapshot ERR: {str(e)[:60]}")
+    _sc_bc("snapshots done")
 
     codes = snap["Code"].tolist()
     names = dict(zip(snap["Code"], snap["Name"]))
@@ -386,11 +399,15 @@ def screen(
         )
 
     # ===== 步驟 2：自快取讀取並評分（37% 進度）=====
+    _sc_bc(f"scoring loop start, n={total}")
     results: list[dict] = []
     for i, code in enumerate(codes):
         if progress_cb and (i % 20 == 0):
             progress_cb(0.62 + (i / max(total, 1)) * 0.37,
                         f"分析 {i + 1} / {total}…")
+        # cloud breadcrumb 每 200 檔印一次定位卡哪
+        if _is_cloud_dbg and i > 0 and i % 200 == 0:
+            _sc_bc(f"scoring progress {i}/{total}, accepted={len(results)}")
         df = _load_from_cache(code, period)
         if df is None:
             continue
@@ -403,6 +420,7 @@ def screen(
                          etf_signal=etf_sig_map.get(code))
         if row:
             results.append(row)
+    _sc_bc(f"scoring loop done, accepted={len(results)}")
 
     if progress_cb:
         progress_cb(1.0, f"分析完成，{len(results)} 檔通過均量篩選")

@@ -13,7 +13,7 @@ permissions:
 jobs:
   send:
     runs-on: ubuntu-latest
-    timeout-minutes: 30   # 給予緩衝；正常雲端模式（skip yfinance）<10 分鐘
+    timeout-minutes: 60   # 雲端機器慢時 screener.screen 可能 25-40 分鐘
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
