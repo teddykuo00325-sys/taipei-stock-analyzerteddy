@@ -81,19 +81,19 @@ def _safe_name(code: str) -> str:
 def evaluate(code: str) -> AlertResult | None:
     """評估單一標的的撿便宜訊號等級.
 
-    若 price_cache 沒該 code 的資料，自動 fetch 1y 進快取（給 ETF 等
-    universe 沒涵蓋的標的）。
+    ★ 永遠用 price_cache.get() 而非 _load() — 確保 DCA 3 個核心持股的
+    K 線是最新的（雲端 GH Actions skip_yfinance_warm=True 導致 DB 停留
+    在過時資料，回檔計算會用錯時間窗口）。get() 內部會增量 fetch；
+    yfinance 已 monkey-patch 25 秒 thread-timeout，即使被擋也只浪費 25s.
     """
     from . import indicators, price_cache
     df_raw = None
     try:
-        df_raw = price_cache._load(code)
+        df_raw = price_cache.get(code, period="1y")
     except Exception:
-        pass
-    # 沒資料時用 get() 自動 fetch
-    if df_raw is None or df_raw.empty or len(df_raw) < 60:
+        # get() 失敗 → 退回 _load() 至少用既有資料算（總比沒有強）
         try:
-            df_raw = price_cache.get(code, period="1y")
+            df_raw = price_cache._load(code)
         except Exception:
             return None
     if df_raw is None or df_raw.empty or len(df_raw) < 60:
@@ -147,13 +147,21 @@ def evaluate(code: str) -> AlertResult | None:
         suggestion = "建議中度加碼（20-30% 月閒置資金）"
 
     # === SMALL：月頻 ===
-    elif pb_20 <= -2 and rsi is not None and rsi < 50:
+    # 跌 ≥2% AND (RSI<50 未過熱  OR  跌 ≥4% 已明顯回檔)
+    # 第二條件 escape hatch：避免「跌很多但 RSI 還沒掉 < 50」漏觸發
+    elif pb_20 <= -2 and (
+            (rsi is not None and rsi < 50) or pb_20 <= -4):
         level = "SMALL"
         emoji = "🟢"
+        if rsi is not None and rsi < 50:
+            rsi_note = f"RSI {rsi:.0f}（未過熱）"
+        else:
+            rsi_str = f"{rsi:.0f}" if rsi is not None else "—"
+            rsi_note = f"回檔已 ≥ 4%（RSI {rsi_str}）"
         note = (f"<b>{emoji} {name} 小型撿便宜（月頻）</b>\n"
                 f"   現價 <b>{close:.2f}</b> ｜ 20 日高點回檔 "
                 f"<b>{pb_20:+.1f}%</b>\n"
-                f"   RSI {rsi:.0f}（未過熱）")
+                f"   {rsi_note}")
         suggestion = "建議小額加碼（5-10% 月閒置資金）"
 
     # 未觸發任何等級：仍回傳 NONE 狀態，讓 UI/TG 可顯示「目前正常」
