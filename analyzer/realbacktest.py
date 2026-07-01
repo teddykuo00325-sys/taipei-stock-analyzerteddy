@@ -251,12 +251,15 @@ def lock_session(side: Literal["long", "short"],
     return sid
 
 
-def check_stop_loss_open_sessions() -> dict:
+def check_stop_loss_open_sessions(force_update: bool = False) -> dict:
     """掃描所有 open sessions 的持股，觸發 MA10 技術停損.
 
     Lv4 自動執行：
       - 多單跌破 MA10 → 立即結算該檔（保留其他持股）
       - 空單突破 MA10 → 立即回補
+
+    force_update=True 時，每檔用 price_cache.get() 強制 fetch 最新 K 線
+    （盤中停損 alert 專用；預設 False 用 _load 讀既有 cache）.
 
     回傳 {session_id: [(code, side, reason, exit_price), ...]}
     """
@@ -270,7 +273,14 @@ def check_stop_loss_open_sessions() -> dict:
             if h.exit_price is not None:
                 continue
             try:
-                df = price_cache._load(h.code)
+                if force_update:
+                    # 強制取最新 K 線（用於盤中停損 workflow）
+                    try:
+                        df = price_cache.get(h.code, period="6mo")
+                    except Exception:
+                        df = price_cache._load(h.code)
+                else:
+                    df = price_cache._load(h.code)
                 if df is None or df.empty:
                     continue
                 df = indicators.add_all(df)

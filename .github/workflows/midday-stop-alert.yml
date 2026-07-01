@@ -1,0 +1,69 @@
+name: Midday Stop-Loss Alert (13:30 Taipei)
+
+# 唯一觸發來源：cron-job.org 在 13:30 (台北) = 05:30 UTC
+# 台股 13:00 收盤後 30 分鐘執行，用最新收盤 K 線判 MA10 停損
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20   # 只掃 open session 小規模，10 分鐘內完成
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          lfs: false
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run midday stop-loss alert
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_CHAT_ID_PRIVATE: ${{ secrets.TELEGRAM_CHAT_ID_PRIVATE }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          python scripts/midday_stop_alert.py
+
+      # 若有停損觸發 → realbacktest.db 會有 exit_date/exit_price 更新
+      # commit 回 repo 保持狀態同步
+      - name: Commit realbacktest.db (if changed)
+        if: success()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if [ -f data/realbacktest.db ]; then
+            git add data/realbacktest.db
+          fi
+          if git diff --staged --quiet; then
+            echo "realbacktest.db 無變動（無停損觸發），跳過 commit"
+            exit 0
+          fi
+          git commit -m "auto(midday-stop): $(TZ=Asia/Taipei date +%Y-%m-%d\\ %H:%M) MA10 exit"
+          for i in 1 2 3 4 5; do
+            if git push; then
+              echo "✅ push 成功 (attempt $i)"
+              exit 0
+            fi
+            echo "⚠️ push 失敗 (attempt $i)，rebase 重試"
+            git fetch origin main
+            git rebase origin/main || { git rebase --abort; exit 1; }
+            sleep 2
+          done
+          echo "❌ push 5 次都失敗"
+          exit 1
