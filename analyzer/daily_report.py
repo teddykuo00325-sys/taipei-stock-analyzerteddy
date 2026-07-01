@@ -279,6 +279,105 @@ _LAST_PICKS: dict = {
 }
 
 
+MIN_RR = 1.5   # R:R < 1.5 顯示 ⚠️（不硬過濾以免整天無推薦）
+
+
+def _pick_trade_details(p: dict, side: str = "long") -> str:
+    """為單一 pick 組合「進場區 / 停損 / 目標 / R:R」四行摘要.
+
+    資料源：p['_diag'].entry_zone / short_stop / target_price / risk_reward
+    這些由 diagnosis.diagnose 已算好。若缺就 return '' 不強加.
+    """
+    diag = p.get('_diag')
+    close = float(p.get('收盤', 0))
+    if not diag or close <= 0:
+        return ""
+
+    entry_zone = getattr(diag, 'entry_zone', None)
+    stop = getattr(diag, 'short_stop', None)
+    target = getattr(diag, 'target_price', None)
+    rr = getattr(diag, 'risk_reward', None)
+
+    # 缺任一關鍵欄位 → 標「資料不足」
+    if not entry_zone or not stop or not target:
+        return "\n      <i>💡 進場資料不足（可能是新上市/停牌股）</i>"
+
+    lo, hi = entry_zone
+    # 進場區狀態：現價已入區 / 等拉回 / 追高
+    if close < lo:
+        entry_note = "可佈局"
+    elif close <= hi:
+        entry_note = "✅ 已入區"
+    else:
+        entry_note = "⏳ 等拉回"
+
+    # 停損 / 目標的距離百分比（以區間中點或收盤為基準）
+    ref = (lo + hi) / 2 if entry_zone else close
+    stop_pct = (stop / ref - 1) * 100 if ref else 0
+    target_pct = (target / ref - 1) * 100 if ref else 0
+
+    # R:R quality tag
+    rr_tag = ""
+    if rr is not None:
+        if rr >= 2.0:
+            rr_tag = f"<b>{rr:.2f}</b> 🏆 優"
+        elif rr >= MIN_RR:
+            rr_tag = f"<b>{rr:.2f}</b> ✅ 可進"
+        else:
+            rr_tag = f"<b>{rr:.2f}</b> ⚠️ 偏低"
+    else:
+        rr_tag = "—"
+
+    lines = [
+        f"      💰 進場：<b>{lo:.2f}~{hi:.2f}</b> ({entry_note})",
+        f"      🛑 停損：<b>{stop:.2f}</b> ({stop_pct:+.2f}%)",
+        f"      🎯 目標：<b>{target:.2f}</b> ({target_pct:+.2f}%)",
+        f"      📊 R:R = {rr_tag}",
+    ]
+    return "\n" + "\n".join(lines)
+
+
+def _compute_tldr(long_picks: list, short_picks: list,
+                    long_proceed: bool, short_proceed: bool) -> str:
+    """組合 TL;DR 決策指令 — 依 R:R 品質統計出「今日該不該進場」.
+
+    Returns HTML line for prepending to public report.
+    """
+    def _quality(picks):
+        good = 0     # R:R ≥ MIN_RR
+        excellent = 0  # R:R ≥ 2.0
+        for p in picks:
+            diag = p.get('_diag')
+            rr = getattr(diag, 'risk_reward', None) if diag else None
+            if rr is None:
+                continue
+            if rr >= 2.0:
+                excellent += 1
+                good += 1
+            elif rr >= MIN_RR:
+                good += 1
+        return good, excellent
+
+    l_good, l_ex = _quality(long_picks) if long_proceed else (0, 0)
+    s_good, s_ex = _quality(short_picks) if short_proceed else (0, 0)
+    total_good = l_good + s_good
+    total_ex = l_ex + s_ex
+
+    if total_good >= 3:
+        icon, mode = "🟢", "積極"
+        cap_hint = "建議動用 60-80% 部位（含 R:R ≥ 2 優質標的）"
+    elif total_good >= 1:
+        icon, mode = "🟡", "選擇性"
+        cap_hint = f"僅 {total_good} 檔達標，建議 20-40% 部位"
+    else:
+        icon, mode = "⚪", "觀望"
+        cap_hint = "⚠️ 今日無 R:R ≥ 1.5 標的，建議<b>休息不進場</b>"
+
+    ex_note = f"（{total_ex} 檔 R:R ≥ 2 優質）" if total_ex else ""
+    return (f"📌 <b>今日決策：{icon} {mode}</b>{ex_note}\n"
+            f"   {cap_hint}")
+
+
 def _section_picks(top_n: int = 5) -> str:
     """跑當前選股，列出 long / short top N."""
     try:
@@ -313,14 +412,16 @@ def _section_picks(top_n: int = 5) -> str:
     _LAST_PICKS["long_proceed"] = rep_l.proceed
     _LAST_PICKS["short_proceed"] = rep_s.proceed
 
-    def _fmt_pick(i: int, p: dict) -> str:
+    def _fmt_pick(i: int, p: dict, side: str = "long") -> str:
         code = str(p['代號'])
         name = _resolve_name(code, str(p.get('名稱', code)))
-        # 含 ETF 動作標籤（從 _etf_signal 取得）
         etf_tag = etf_signal.format_signal_for_tg(p.get('_etf_signal'))
-        return (f"   {i}. <b>{code} {name}</b>　"
-                f"收 {p['收盤']:.2f}　評分 {p['分數']}"
-                + etf_tag)
+        header = (f"   {i}. <b>{code} {name}</b>　"
+                  f"收 {p['收盤']:.2f}　評分 {p['分數']}"
+                  + etf_tag)
+        # ★ P0-1：進場價 / 停損 / 目標 / R:R
+        trade = _pick_trade_details(p, side)
+        return header + (trade if trade else "")
 
     lines = []
     if rep_l.proceed:
@@ -328,7 +429,7 @@ def _section_picks(top_n: int = 5) -> str:
         lines.append(f"\n🚀 <b>系統推薦做多 Top {n_l}</b>"
                      f"（已套 5 層過濾）")
         for i, p in enumerate(rep_l.picks_filtered[:top_n], 1):
-            lines.append(_fmt_pick(i, p))
+            lines.append(_fmt_pick(i, p, side="long"))
     else:
         lines.append(f"\n🚫 <b>做多：</b>{rep_l.skip_reason}")
 
@@ -337,7 +438,7 @@ def _section_picks(top_n: int = 5) -> str:
         lines.append(f"\n🐻 <b>系統推薦做空 Top {n_s}</b>"
                      f"（已套 5 層過濾）")
         for i, p in enumerate(rep_s.picks_filtered[:top_n], 1):
-            lines.append(_fmt_pick(i, p))
+            lines.append(_fmt_pick(i, p, side="short"))
     else:
         lines.append(f"\n🚫 <b>做空：</b>{rep_s.skip_reason}")
     return "\n".join(lines)
@@ -686,6 +787,20 @@ def build_daily_report(top_n: int = 5,
         if sect:
             parts.append(sect)
     _bc("done")
+
+    # ★ P0-1：TL;DR 決策指令 — 依 R:R 品質統計，插在標題正下方
+    if "picks" in sections:
+        try:
+            tldr = _compute_tldr(
+                _LAST_PICKS.get("long") or [],
+                _LAST_PICKS.get("short") or [],
+                _LAST_PICKS.get("long_proceed", False),
+                _LAST_PICKS.get("short_proceed", False),
+            )
+            # 插到標題（parts[0]）與分隔線（parts[1]）之間
+            parts.insert(1, tldr)
+        except Exception as _e:
+            _bc(f"tldr failed: {_e}")
     # 偵測執行環境：GitHub Actions 設 GITHUB_ACTIONS=true
     import os as _os
     is_cloud = (_os.environ.get("GITHUB_ACTIONS") == "true"
