@@ -91,8 +91,9 @@ def _score_one(code: str, name: str, df: pd.DataFrame,
                 d.entry_zone and d.entry_zone[0] <= float(last["close"])
                 <= d.entry_zone[1]
             ),
-            # tiebreaker 分數（同分時 3 天勝率排序用，含 ETF 動向）
-            "Tiebreak": _compute_tiebreak(dff, d, etf_signal=etf_signal),
+            # tiebreaker 分數（同分時 3 天勝率排序用，含 ETF 動向 + 籌碼）
+            "Tiebreak": _compute_tiebreak(dff, d, etf_signal=etf_signal,
+                                            stock_code=code),
             # 把 ETF signal 也存進 row，供 daily_report / app 顯示用
             "_etf_signal": etf_signal,
         }
@@ -100,14 +101,17 @@ def _score_one(code: str, name: str, df: pd.DataFrame,
         return None
 
 
-def _compute_tiebreak(df, diag, etf_signal: dict | None = None) -> int:
+def _compute_tiebreak(df, diag, etf_signal: dict | None = None,
+                       stock_code: str | None = None) -> int:
     """計算多方 tiebreak（screener 主要用 long-side ranking）.
 
     etf_signal: 該股在前 5 大主動式 ETF 的動作分數 (第 8 維 H)
+    stock_code: 用於查 chip_concentration (第 9 維 I)
     """
     try:
         from . import tiebreaker
-        return tiebreaker.compute(df, diag, etf_signal=etf_signal).total
+        return tiebreaker.compute(df, diag, etf_signal=etf_signal,
+                                    stock_code=stock_code).total
     except Exception:
         return 0
 

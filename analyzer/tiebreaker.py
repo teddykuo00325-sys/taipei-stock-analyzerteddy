@@ -3,13 +3,14 @@
 當主評分系統把多檔股票評為同分（譬如 5+ 檔都是 100 分）時，需要二級
 排序機制來挑「短線勝率最高」的進場標的。
 
-權重（v3，已經過 30 天 27,741 觸發點實證調整 + 加 ETF 動向第 8 維）：
+權重（v4，加入 ETF 動向第 8 維 + 籌碼集中度第 9 維）：
 
-8 個正向維度（總計 +113~+128 依 regime）：
+9 個正向維度（總計 +123~+148 依 regime）：
   F 短期動能甜蜜點 (+25) ★ 實證勝率 54.6% 最高（昨漲 +1~3%）
   D 不過熱 (+20)            ★ 實證勝率 54.2%、N=13k 最穩定
   B 法人連續買超 (+20)      無歷史回測，依理論保留
   H 主動 ETF 動向 (±18 max) ★ v3 新增（NEW+15/+INC+8/-DEC-8/OUT-15）
+  I 籌碼集中度 (±15 max)   ★ v4 新增（小散戶 L2+L3 週離場 ≥5% + 未破 4 月低 + 量夠）
   A 爆量突破 (+10) ↓        實證 48.7%（多頭中追熱反失利）
   G 軋空潛力 (+10)          無歷史回測，依理論保留
   C 動能加速 (+8) ↓         實證 48.7%（多頭中過熱反指標）
@@ -36,20 +37,20 @@ _WEIGHTS = {
     "bull": {  # 強多頭
         "A_max": 10, "B_max": 20, "C_max": 8,  "D_max": 20,
         "E_max": 8,  "F_max": 25, "G_max": 10,
-        # H：ETF 動向 — 強多頭時許多動作已 priced in，權重次要
-        "H_max": 12,
+        "H_max": 12,   # ETF 動向 — 多頭中許多動作已 priced in
+        "I_max": 10,   # 籌碼集中（小散戶離場）— 趨勢時次要
     },
     "bear": {  # 強空頭（A/C 反轉為強訊號）
         "A_max": 20, "B_max": 20, "C_max": 18, "D_max": 10,
         "E_max": 10, "F_max": 12, "G_max": 15,
-        # H：強空頭時 ETF 經理人逆勢加碼/退出是強訊號
-        "H_max": 18,
+        "H_max": 18,   # ETF 逆勢加碼/退出是強訊號
+        "I_max": 8,    # 籌碼集中 — 跌勢中散戶離場不一定救得了
     },
     "sideways": {  # 整理（介於兩者）
         "A_max": 15, "B_max": 20, "C_max": 12, "D_max": 15,
         "E_max": 10, "F_max": 18, "G_max": 12,
-        # H：整理盤需 alpha 來源，ETF 動向重要
-        "H_max": 15,
+        "H_max": 15,   # ETF 動向為 alpha 來源
+        "I_max": 15,   # 籌碼集中 — 整理盤最有效 ★
     },
 }
 
@@ -61,7 +62,7 @@ def _get_weights(regime: str | None) -> dict:
 
 @dataclass
 class TiebreakDetail:
-    total: int                              # 總分 (-68 ~ +128)
+    total: int                              # 總分 (-76 ~ +148)
     a_breakout: int = 0                     # 爆量突破
     b_institutional: int = 0                # 法人連續買超
     c_momentum: int = 0                     # 動能加速
@@ -69,7 +70,8 @@ class TiebreakDetail:
     e_signal_fresh: int = 0                 # KD/MACD 鮮度
     f_sweet_spot: int = 0                   # 短期動能甜蜜點
     g_short_squeeze: int = 0                # 軋空潛力
-    h_etf_flow: int = 0                     # 主動式 ETF 動向（新增第 8 維）
+    h_etf_flow: int = 0                     # 主動式 ETF 動向（第 8 維）
+    i_chip_concentration: int = 0           # 籌碼集中度（第 9 維，新增）
     penalty: int = 0                        # 反向扣分總和（負數）
     notes: list[str] = field(default_factory=list)
 
@@ -287,15 +289,16 @@ def _compute_penalty(df: pd.DataFrame, diag, notes: list[str]) -> int:
 # ============================================================
 def compute(df: pd.DataFrame, diag,
              regime: str | None = None,
-             etf_signal: dict | None = None) -> TiebreakDetail:
+             etf_signal: dict | None = None,
+             stock_code: str | None = None) -> TiebreakDetail:
     """計算 tiebreak 分數.
 
     df: K 線 (含 indicators — ma5/ma10/ma20/k/d/rsi/macd_hist/volume)
     diag: Diagnosis 物件（用 institutional_info / margin_info / candles）
     regime: 'bull' / 'bear' / 'sideways'，None 自動偵測；用於選權重組
-    etf_signal: 該股在前 5 大主動式 ETF 的動作分數
-                {'score': float, 'actions': [...], 'summary': str}
-                None 代表無資料／無動作；用於第 8 維 H
+    etf_signal: 該股在前 5 大主動式 ETF 的動作分數（H 維）
+    stock_code: 股票代號，用於查 chip_concentration DB 算 I 維
+                None 或 code 查不到 → I=0（不影響其他維度）
     """
     if df is None or df.empty:
         return TiebreakDetail(total=0)
@@ -341,27 +344,54 @@ def compute(df: pd.DataFrame, diag,
             summary = etf_signal.get("summary", "")
             sign = "+" if h > 0 else ""
             notes.append(f"H 主動 ETF 動向 {sign}{h}（{summary}）")
-    total = a + b + c + d + e + f + g + h + penalty
+
+    # I：籌碼集中度（第 9 維）— 小散戶 L2+L3 週人數變化
+    # 每天用最新可得 DB 資料（TDCC 每週五更新，週間沿用上週）
+    i = 0
+    if stock_code:
+        try:
+            from . import chip_concentration
+            chip_sig = chip_concentration.detect_signal(stock_code)
+            if chip_sig and chip_sig.score != 0:
+                raw_i = float(chip_sig.score)
+                i_max = w.get("I_max", 0)
+                i = int(round(max(-i_max, min(i_max, raw_i))))
+                if i != 0:
+                    sign = "+" if i > 0 else ""
+                    notes.append(
+                        f"I 籌碼集中 {sign}{i}"
+                        f"（L2+L3 週 {chip_sig.weekly_change_pct:+.1f}%"
+                        + (f", 連{chip_sig.streak}週"
+                           if chip_sig.streak >= 2 else "")
+                        + "）"
+                    )
+        except Exception:
+            pass
+
+    total = a + b + c + d + e + f + g + h + i + penalty
     if regime != "sideways":
         notes.insert(0, f"[regime={regime} 動態權重]")
     return TiebreakDetail(
         total=total, a_breakout=a, b_institutional=b, c_momentum=c,
         d_not_overheated=d, e_signal_fresh=e, f_sweet_spot=f,
-        g_short_squeeze=g, h_etf_flow=h, penalty=penalty, notes=notes,
+        g_short_squeeze=g, h_etf_flow=h, i_chip_concentration=i,
+        penalty=penalty, notes=notes,
     )
 
 
 def compute_short_side(df: pd.DataFrame, diag,
-                       etf_signal: dict | None = None) -> TiebreakDetail:
+                       etf_signal: dict | None = None,
+                       stock_code: str | None = None) -> TiebreakDetail:
     """做空版 tiebreak（方向相反）.
 
     對做空候選，理想是「跌破 + 量縮反彈 + 短期已過熱 + 法人賣超」。
     簡化：把多空鏡像處理 — 取多單 tiebreak 的負數，並加做空特有 bonus。
 
-    etf_signal：對做空也是反向 — ETF 加碼/新進 = 不適合做空（H 扣分）；
-                ETF 退出/減碼 = 適合做空（H 加分）
+    etf_signal / stock_code：對做空也是反向 — 主力加碼/散戶離場對做空
+    都是不利訊號，各維度分數自動反向.
     """
-    long_score = compute(df, diag, etf_signal=etf_signal)
+    long_score = compute(df, diag, etf_signal=etf_signal,
+                          stock_code=stock_code)
     # 簡單反向：多單高分 → 不適合做空（分數低）；多單低分 → 適合做空
     # 但 G 軋空 對做空是 risk，要扣
     # H 對做空亦反向（ETF 加碼 → 不該做空）
@@ -375,6 +405,7 @@ def compute_short_side(df: pd.DataFrame, diag,
         f_sweet_spot=-long_score.f_sweet_spot,
         g_short_squeeze=-long_score.g_short_squeeze * 2,
         h_etf_flow=-long_score.h_etf_flow,   # ETF 動向反向
+        i_chip_concentration=-long_score.i_chip_concentration,  # 籌碼反向
         penalty=long_score.penalty,
         notes=[f"做空版反向計算（基於多方分數 {long_score.total}）"],
     )
