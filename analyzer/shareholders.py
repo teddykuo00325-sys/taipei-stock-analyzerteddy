@@ -74,6 +74,14 @@ def _conn() -> sqlite3.Connection:
         )
     """)
     c.execute("CREATE INDEX IF NOT EXISTS idx_h_date ON holders(date)")
+    # ★ 新增：Level 2 (1~5 張) 與 Level 3 (5~10 張) 的人數欄位
+    # 用於「散戶持股集中度」訊號 — 分別追蹤小散戶行為
+    # ALTER 用 try/except 免得已存在時錯誤
+    for col in ("l2_count", "l3_count"):
+        try:
+            c.execute(f"ALTER TABLE holders ADD COLUMN {col} INTEGER")
+        except sqlite3.OperationalError:
+            pass  # column already exists
     return c
 
 
@@ -105,7 +113,7 @@ def _fetch_raw() -> pd.DataFrame:
 
 
 def _summarize(df_one_code: pd.DataFrame) -> dict:
-    """Aggregate level 1~15 into retail/mid/big/kilo."""
+    """Aggregate level 1~15 into retail/mid/big/kilo + L2/L3 count."""
     # exclude level 16 (差異) and 17 (合計)
     df = df_one_code[df_one_code["lvl"].between(1, 15)]
     retail = float(df[df["lvl"].between(1, 3)]["pct"].sum())
@@ -113,9 +121,14 @@ def _summarize(df_one_code: pd.DataFrame) -> dict:
     big = float(df[df["lvl"].between(10, 14)]["pct"].sum())
     kilo = float(df[df["lvl"] == 15]["pct"].sum())
     total_holders = int(df["n"].sum())
+    # ★ Level 2 (1000~5000 股 = 1~5 張) + Level 3 (5001~10000 = 5~10 張)
+    # 「小散戶」嚴格定義 — 排除 Level 1 畸零戶（<1000 股，股利轉入雜訊多）
+    l2_count = int(df[df["lvl"] == 2]["n"].sum())
+    l3_count = int(df[df["lvl"] == 3]["n"].sum())
     return {"retail_pct": retail, "mid_pct": mid,
             "big_pct": big, "kilo_pct": kilo,
-            "total_holders": total_holders}
+            "total_holders": total_holders,
+            "l2_count": l2_count, "l3_count": l3_count}
 
 
 def snapshot(max_age_sec: int = 86400) -> pd.DataFrame:
@@ -146,18 +159,30 @@ def for_code(code: str) -> Holder | None:
     # YYYYMMDD → YYYY-MM-DD
     if len(date_str) == 8:
         date_str = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
-    # 寫入歷史 DB
+    # 寫入歷史 DB — 9 欄（含新增的 l2_count, l3_count）
     try:
         with _lock, _conn() as c:
             c.execute(
-                "INSERT OR REPLACE INTO holders VALUES (?,?,?,?,?,?,?)",
+                "INSERT OR REPLACE INTO holders "
+                "(code, date, retail_pct, mid_pct, big_pct, kilo_pct, "
+                " total_holders, l2_count, l3_count) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
                 (code, date_str, summary["retail_pct"],
                  summary["mid_pct"], summary["big_pct"],
-                 summary["kilo_pct"], summary["total_holders"]),
+                 summary["kilo_pct"], summary["total_holders"],
+                 summary["l2_count"], summary["l3_count"]),
             )
     except Exception:
         pass
-    return Holder(code=code, date=date_str, **summary)
+    # Holder dataclass 只放核心 pct，l2/l3 count 從 summary 額外取
+    return Holder(
+        code=code, date=date_str,
+        retail_pct=summary["retail_pct"],
+        mid_pct=summary["mid_pct"],
+        big_pct=summary["big_pct"],
+        kilo_pct=summary["kilo_pct"],
+        total_holders=summary["total_holders"],
+    )
 
 
 def history(code: str) -> pd.DataFrame:

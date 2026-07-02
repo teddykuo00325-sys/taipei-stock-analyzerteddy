@@ -343,6 +343,33 @@ def render_card(row: pd.Series, rank: int, key_ns: str = "card"):
             f"{etf_icon} ETF {sign}{score:.1f}</span>"
         )
 
+    # --- 籌碼集中度 tag（Level 2+3 小散戶離場）---
+    chip_tag = ""
+    try:
+        from analyzer import chip_concentration
+        chip_sig = chip_concentration.detect_signal(code)
+        if chip_sig and (chip_sig.qualified or chip_sig.score != 0):
+            if chip_sig.score > 0:
+                chip_color = "#e55353"
+                chip_icon = "🎯"
+                streak_str = (f"×{chip_sig.streak}週"
+                              if chip_sig.streak >= 2 else "")
+                chip_label = (f"{chip_icon} 散戶 "
+                              f"{chip_sig.weekly_change_pct:+.1f}%{streak_str}")
+            else:
+                chip_color = "#3dbd6e"
+                chip_icon = "⚠️"
+                chip_label = (f"{chip_icon} 散戶湧入 "
+                              f"{chip_sig.weekly_change_pct:+.1f}%")
+            chip_tag = (
+                f"<span style='background:rgba(150,255,180,0.12); "
+                f"color:{chip_color}; padding:1px 7px; border-radius:8px;"
+                f" font-size:11px; margin-left:6px;' "
+                f"title='{chip_sig.note}'>{chip_label}</span>"
+            )
+    except Exception:
+        pass
+
     # --- 月營收 YoY ---
     rev_text = ""
     try:
@@ -400,7 +427,7 @@ def render_card(row: pd.Series, rank: int, key_ns: str = "card"):
             f"<div style='font-size:13px;'>"
             f"<b style='color:#fafafa;font-size:15px;'>"
             f"#{rank} {_row_name} ({code})</b>"
-            f"{cont}{ind_tag}{etf_tag}{time_tag}{rev_text}"
+            f"{cont}{ind_tag}{etf_tag}{chip_tag}{time_tag}{rev_text}"
             f"</div>"
             f"<div style='margin:4px 0;display:flex;"
             f"align-items:baseline;gap:10px;'>"
@@ -769,6 +796,93 @@ def render_market_sidebar():
                         f"</span>",
                         unsafe_allow_html=True,
                     )
+
+    # === 🎯 籌碼集中度（小散戶 L2+L3 離場）===
+    with st.sidebar.expander("🎯 籌碼集中度追蹤 (小散戶離場)",
+                              expanded=False):
+        st.caption(
+            "📌 規則：Level 2+3 (1~10 張小散戶) 週人數 ≥ 5% 減少 + "
+            "未破 4 月低 + 日均量 ≥ 2000 張 → 主力吸貨訊號"
+        )
+        st.caption("資料源：TDCC 集保股權分散 · 每週五盤後更新")
+
+        query_code = st.text_input(
+            "查詢代號", value="2330",
+            key="chip_query_code",
+        )
+        if st.button("查訊號", key="chip_detect",
+                      use_container_width=True):
+            try:
+                from analyzer import chip_concentration
+                sig = chip_concentration.detect_signal(query_code.strip())
+                if sig is None:
+                    st.info(
+                        "資料不足（需 ≥ 2 週歷史 L2/L3 count）— "
+                        "shareholders.snapshot() 累積 2 週後即有結果"
+                    )
+                else:
+                    if sig.qualified:
+                        st.success(
+                            f"🎯 **符合訊號** ｜ 分數 {sig.score}"
+                        )
+                    elif sig.score > 0:
+                        st.info(f"部分符合 ｜ 分數 {sig.score}")
+                    elif sig.score < 0:
+                        st.warning(
+                            f"⚠️ 散戶湧入警告 ｜ 分數 {sig.score}")
+                    else:
+                        st.caption("無明顯訊號")
+
+                    m1, m2, m3, m4 = st.columns(4)
+                    m1.metric("L2+L3 週變", f"{sig.weekly_change_pct:+.2f}%")
+                    m2.metric("連續週數", f"{sig.streak}")
+                    m3.metric("日均量", f"{sig.avg_volume_lots:.0f} 張")
+                    m4.metric(
+                        "4 月低點",
+                        f"{sig.low_4m:.2f}",
+                        f"{'破' if sig.broke_4m_low else '守'}"
+                    )
+                    st.caption(f"📝 {sig.note}")
+                    st.caption(
+                        f"L2 (1~5 張) 人數：{sig.l2_count:,} ｜ "
+                        f"L3 (5~10 張) 人數：{sig.l3_count:,}")
+            except Exception as _e:
+                st.error(f"訊號計算失敗：{_e}")
+
+        st.divider()
+        st.markdown("**🔬 假設驗證**")
+        st.caption("跑歷史回測：DB 中所有觸發點 → +5/+10/+20 日勝率")
+        if st.button("跑驗證", key="chip_verify",
+                      use_container_width=True):
+            with st.spinner("計算中…"):
+                try:
+                    from analyzer import chip_concentration
+                    res = chip_concentration.verify_hypothesis()
+                except Exception as _e:
+                    res = None
+                    st.error(f"驗證失敗：{_e}")
+            if res:
+                st.caption(res.get("note", ""))
+                st.caption(f"總觸發：{res.get('n_triggers', 0)}")
+                for fd, stats in res.get("by_forward", {}).items():
+                    if stats.get("n", 0) == 0:
+                        st.markdown(f"- **+{fd} 日**：N=0 _資料不足_")
+                        continue
+                    wr = stats.get("win_rate", 0)
+                    wr_icon = ("🏆" if wr > 60
+                                else "✅" if wr > 55 else
+                                "⚠️" if wr > 45 else "❌")
+                    st.markdown(
+                        f"- **+{fd} 日**：N={stats['n']} ｜ "
+                        f"勝率 {wr_icon} **{wr:.0f}%** ｜ "
+                        f"平均 **{stats['avg']:+.2f}%** ｜ "
+                        f"中位 {stats['median']:+.2f}% ｜ "
+                        f"範圍 {stats['worst']:+.1f}% ~ "
+                        f"{stats['best']:+.1f}%"
+                    )
+                st.caption(
+                    "🎯 未來若勝率穩定 > 55%，將整合進 tiebreaker 第 13 維 I"
+                )
 
     # === 🚨 處置股名單（含 3 日跌幅 + 驗證）===
     with st.sidebar.expander("🚨 處置股 + 跌幅追蹤",
