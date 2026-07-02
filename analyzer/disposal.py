@@ -205,6 +205,68 @@ def recent_disposals(
     return out
 
 
+def build_active_map() -> dict[str, DisposalStock]:
+    """回傳 {code: DisposalStock} 所有目前處於處置期間的股票.
+
+    用於「推薦名單重疊警示」— 選股 Top N 若有 code 在此 map 中即警告.
+    含即將開始 + 進行中；已結束的排除.
+    """
+    from datetime import date as _d
+    today = _d.today()
+    return {
+        s.code: s for s in fetch_all()
+        if s.end_date >= today   # 未結束（含未開始）
+    }
+
+
+def disposal_warn_tag_for_tg(stock: DisposalStock | None) -> str:
+    """給推薦 pick 附的處置警告標籤（TG HTML 格式）.
+
+    分 3 級：
+      🚨 20 分揭示 (第一次)   — 影響中
+      🚨🚨 5 分揭示 (第二次)  — 影響高（需預收款券）
+      🚨🚨🚨 逐筆撮合 (第三次) — 影響最高
+    """
+    if stock is None:
+        return ""
+    if stock.interval_min == 20:
+        icon, label = "🚨", f"20分處置 (第 {stock.days_in} 日)"
+    elif stock.interval_min == 5:
+        icon, label = "🚨🚨", f"5分處置 (第 {stock.days_in} 日)"
+    else:
+        icon, label = "🚨🚨🚨", f"逐筆撮合 (第 {stock.days_in} 日)"
+    return f"  <b>{icon} {label}</b>"
+
+
+def disposal_warn_tag_for_web(stock: DisposalStock | None) -> str:
+    """Web 卡片用（HTML）— 紅底標籤，顯示嚴重度."""
+    if stock is None:
+        return ""
+    from datetime import date as _d
+    today = _d.today()
+    if stock.start_date > today:
+        days_until = (stock.start_date - today).days
+        state = f"⏳ {days_until}日後起"
+    else:
+        state = f"第{stock.days_in}日"
+
+    if stock.interval_min == 20:
+        icon, bg = "🚨", "rgba(255,152,0,0.28)"      # 橘 - 中
+        label = f"20分處置 {state}"
+    elif stock.interval_min == 5:
+        icon, bg = "🚨🚨", "rgba(244,67,54,0.32)"    # 紅 - 高
+        label = f"5分處置 {state}"
+    else:
+        icon, bg = "🚨🚨🚨", "rgba(183,28,28,0.45)"  # 深紅 - 最高
+        label = f"逐筆撮合 {state}"
+
+    return (f"<span style='background:{bg}; color:#fff; "
+            f"padding:1px 7px; border-radius:8px; font-size:11px;"
+            f" font-weight:600; margin-left:6px;' "
+            f"title='處置期間 {stock.start_date}→{stock.end_date}'>"
+            f"{icon} {label}</span>")
+
+
 def format_for_tg(stocks: list[DisposalStock],
                    header: bool = True,
                    max_n: int = 10) -> str:

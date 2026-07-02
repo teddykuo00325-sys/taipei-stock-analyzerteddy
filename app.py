@@ -343,6 +343,21 @@ def render_card(row: pd.Series, rank: int, key_ns: str = "card"):
             f"{etf_icon} ETF {sign}{score:.1f}</span>"
         )
 
+    # --- 處置股警告 tag（20分/5分/逐筆 三級）---
+    disp_tag = ""
+    try:
+        from analyzer import disposal as _disp_mod
+        _disp_all = _disp_mod.fetch_all()
+        _stock_disp = next(
+            (s for s in _disp_all if s.code == code
+             and s.end_date >= _dtk.date.today()),
+            None,
+        )
+        if _stock_disp:
+            disp_tag = _disp_mod.disposal_warn_tag_for_web(_stock_disp)
+    except Exception:
+        pass
+
     # --- 籌碼集中度 tag（Level 2+3 小散戶離場）---
     chip_tag = ""
     try:
@@ -427,7 +442,7 @@ def render_card(row: pd.Series, rank: int, key_ns: str = "card"):
             f"<div style='font-size:13px;'>"
             f"<b style='color:#fafafa;font-size:15px;'>"
             f"#{rank} {_row_name} ({code})</b>"
-            f"{cont}{ind_tag}{etf_tag}{chip_tag}{time_tag}{rev_text}"
+            f"{cont}{ind_tag}{disp_tag}{etf_tag}{chip_tag}{time_tag}{rev_text}"
             f"</div>"
             f"<div style='margin:4px 0;display:flex;"
             f"align-items:baseline;gap:10px;'>"

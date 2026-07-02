@@ -400,6 +400,12 @@ def _section_picks(top_n: int = 5) -> str:
     rep_s = backtest_filter.apply_all_filters(
         "short", short_raw, industry_map=ind_map)
 
+    # ★ 抓當前處置股 map — 用於推薦名單重疊警示
+    try:
+        _disposal_map = disposal.build_active_map()
+    except Exception:
+        _disposal_map = {}
+
     # 緩存到模組級供之後 auto-lock 使用
     _LAST_PICKS["long"] = (
         list(rep_l.picks_filtered[:top_n]) if rep_l.proceed else [])
@@ -416,9 +422,11 @@ def _section_picks(top_n: int = 5) -> str:
         code = str(p['代號'])
         name = _resolve_name(code, str(p.get('名稱', code)))
         etf_tag = etf_signal.format_signal_for_tg(p.get('_etf_signal'))
+        # ★ 處置股警告（紅字）— 20分 / 5分 / 逐筆 三級
+        disp_tag = disposal.disposal_warn_tag_for_tg(_disposal_map.get(code))
         header = (f"   {i}. <b>{code} {name}</b>　"
                   f"收 {p['收盤']:.2f}　評分 {p['分數']}"
-                  + etf_tag)
+                  + etf_tag + disp_tag)
         # ★ P0-1：進場價 / 停損 / 目標 / R:R
         trade = _pick_trade_details(p, side)
         return header + (trade if trade else "")
