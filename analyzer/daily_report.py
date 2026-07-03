@@ -885,17 +885,19 @@ def build_private_addendum() -> str:
 def send_daily_report(top_n: int = 5,
                        sections: list[str] | None = None,
                        auto_fetch_etf: bool = True,
-                       auto_track: bool = True) -> tuple[bool, str]:
+                       auto_track: bool = True,
+                       prebuilt_text: str | None = None) -> tuple[bool, str]:
     """組合並發送每日報告.
 
+    prebuilt_text: 若已在外部呼叫過 build_daily_report(top_n, sections)，
+                   可傳入避免重複執行（雲端 screener.screen() 300 檔 ≈ 25 分鐘，
+                   跑兩次會超時）。傳入時仍會執行 auto_lock（需 _LAST_PICKS 已填）.
     auto_fetch_etf: 發送前先自動抓主動式 ETF 最新持股（True=確保資料最新）。
-    auto_track: True 時自動結算到期 session + lock 今日推薦進 realbacktest，
-               用於累積 Track Record。
+    auto_track: True 時自動結算到期 session + lock 今日推薦進 realbacktest.
 
     雙軌推送：
       ◦ 公開 channel（TELEGRAM_CHAT_ID）：行情/regime/推薦/ETF/美股
       ◦ 私人 chat（TELEGRAM_CHAT_ID_PRIVATE）：上面那份 + Track Record + 資金配置
-        若 TELEGRAM_CHAT_ID_PRIVATE 未設定，私人部分跳過。
     """
     import os as _os
 
@@ -923,7 +925,11 @@ def send_daily_report(top_n: int = 5,
             pass
 
     # 1) 公開版 → 預設 TELEGRAM_CHAT_ID（channel）
-    public_text = build_daily_report(top_n=top_n, sections=sections)
+    # 若外部已 build（e.g. preview 用），直接用 prebuilt_text 避免重複跑 screener
+    if prebuilt_text:
+        public_text = prebuilt_text
+    else:
+        public_text = build_daily_report(top_n=top_n, sections=sections)
     ok, msg = telegram_notify.send_long(public_text, parse_mode="HTML")
 
     # === Phase 1: 公開推送成功 → 自動 lock 今日推薦（須在私人 addendum 前） ===
