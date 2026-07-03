@@ -161,15 +161,28 @@ def diff_holdings(etf_code: str,
     輸出欄位：stock_code, stock_name, shares_new, shares_old, shares_diff,
              weight_new, weight_old, weight_diff, action
     action = NEW / OUT / +INC / -DEC
+
+    ★ merge on stock_code only（不含 stock_name）— 舊版用兩者 merge，
+    若同一 code 兩次 name 因亂碼/更名不同，會被拆成兩筆假的
+    「新進 + 退出」訊號. 名稱優先取 newer；若 newer 缺（=OUT）用 older.
     """
     new_df = load_holdings(etf_code, newer)
     old_df = load_holdings(etf_code, older)
     if new_df.empty and old_df.empty:
         return pd.DataFrame()
-    new_df = new_df.rename(columns={"shares": "shares_new", "weight": "weight_new"})
-    old_df = old_df.rename(columns={"shares": "shares_old", "weight": "weight_old"})
-    merged = pd.merge(new_df, old_df,
-                      on=["stock_code", "stock_name"], how="outer").fillna(0)
+    new_df = new_df.rename(columns={
+        "shares": "shares_new", "weight": "weight_new",
+        "stock_name": "stock_name_new"})
+    old_df = old_df.rename(columns={
+        "shares": "shares_old", "weight": "weight_old",
+        "stock_name": "stock_name_old"})
+    merged = pd.merge(new_df, old_df, on="stock_code",
+                      how="outer").fillna(0)
+    # 名稱優先用 newer 那次；若 newer 缺（新進為 0=OUT）退回 older
+    merged["stock_name"] = merged["stock_name_new"].where(
+        merged["stock_name_new"] != 0,
+        merged["stock_name_old"])
+    merged = merged.drop(columns=["stock_name_new", "stock_name_old"])
     merged["shares_diff"] = merged["shares_new"] - merged["shares_old"]
     merged["weight_diff"] = merged["weight_new"] - merged["weight_old"]
 

@@ -709,6 +709,11 @@ def _section_etf_changes(max_etfs: int = 5) -> str:
         inc = diff[diff["action"] == "+INC"].head(3)
         dec = diff[diff["action"] == "-DEC"].head(3)
 
+        # ★ 若 4 種 action 都空（兩天持股完全一樣）→ 跳過整段
+        # 避免出現「標題但無明細」的空白 ETF 段
+        if new_in.empty and out.empty and inc.empty and dec.empty:
+            continue
+
         lines.append(f"\n   <b>{m.code} {short_name}</b>　"
                      f"({dates[1]} → {dates[0]})")
         if not new_in.empty:

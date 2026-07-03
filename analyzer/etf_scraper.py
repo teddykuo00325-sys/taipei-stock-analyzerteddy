@@ -74,7 +74,10 @@ def fetch_holdings(etf_code: str, timeout: int = 15) -> FetchResult:
         r = http.get(MONEYDJ_URL, params={"etfid": f"{etf_code}.TW"},
                      timeout=timeout)
         r.raise_for_status()
-        r.encoding = r.apparent_encoding or "utf-8"
+        # ★ 強制 UTF-8 — MoneyDJ 是繁中站直接用 UTF-8.
+        # 舊版用 r.apparent_encoding (chardet) 會把某些 body 誤判為
+        # windows-1251 導致中文變 Cyrillic 亂碼（如「еҚ—дҝҠеңӢйҡӣ」）
+        r.encoding = "utf-8"
         return _parse_moneydj(r.text, etf_code)
     except Exception as e:
         return FetchResult(False, etf_code, etf_code,
