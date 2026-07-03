@@ -104,23 +104,56 @@ def _action(score: int, ma_state: str, weekly_bull: bool | None) -> tuple[str, s
 
 def _target(df: pd.DataFrame, pats: list, stance: str,
             resistance: float, support: float) -> tuple[float | None, str]:
-    price = df["close"].iloc[-1]
+    """計算目標價；含 sanity check 確保 long target > price / short target < price.
+
+    Bug fix：原邏輯用「近期壓力」當多方目標，但壓力已跌破時 target 可能低於
+    現價，讓 TG 出現「目標價 < 現價」的荒謬推薦.
+    """
+    price = float(df["close"].iloc[-1])
+    raw_target: float | None = None
+    note = ""
+
     for p in pats:
         if p.signal == "bull" and p.neckline:
-            bottom = df["low"].tail(60).min()
-            return float(p.neckline + (p.neckline - bottom)), \
-                   f"{p.name} 突破頸線幅度推算"
+            bottom = float(df["low"].tail(60).min())
+            raw_target = float(p.neckline + (p.neckline - bottom))
+            note = f"{p.name} 突破頸線幅度推算"
+            break
         if p.signal == "bear" and p.neckline:
-            top = df["high"].tail(60).max()
-            return float(max(p.neckline - (top - p.neckline), 0)), \
-                   f"{p.name} 跌破頸線幅度推算"
+            top = float(df["high"].tail(60).max())
+            raw_target = float(max(p.neckline - (top - p.neckline), 0))
+            note = f"{p.name} 跌破頸線幅度推算"
+            break
+
+    if raw_target is None:
+        if stance in ("多方", "偏多"):
+            raw_target = (resistance * 1.05
+                          if price >= resistance * 0.98 else resistance)
+            note = "近期壓力 / 突破後延伸 5%"
+        elif stance in ("空方", "偏空"):
+            raw_target = (support * 0.95
+                          if price <= support * 1.02 else support)
+            note = "近期支撐 / 跌破後延伸 5%"
+        else:
+            raw_target = float(resistance)
+            note = "壓力價（區間震盪上緣）"
+
+    # ★ Sanity check — 目標價必須合理相對於現價
+    # Long/偏多：target 必須 > 現價，否則 fallback 至少 +5%
+    # Short/偏空：target 必須 < 現價，否則 fallback 至少 -5%
     if stance in ("多方", "偏多"):
-        target = resistance * 1.05 if price >= resistance * 0.98 else resistance
-        return float(target), "近期壓力 / 突破後延伸 5%"
-    if stance in ("空方", "偏空"):
-        target = support * 0.95 if price <= support * 1.02 else support
-        return float(target), "近期支撐 / 跌破後延伸 5%"
-    return float(resistance), "壓力價（區間震盪上緣）"
+        if raw_target <= price:
+            # 用計量方式重算：近 20 日高點或 +5% 取較大者
+            recent_high = float(df["high"].tail(20).max())
+            raw_target = max(recent_high, price * 1.05)
+            note = "壓力已被突破/失效 → 用近 20 日高點或 +5% (fallback)"
+    elif stance in ("空方", "偏空"):
+        if raw_target >= price:
+            recent_low = float(df["low"].tail(20).min())
+            raw_target = min(recent_low, price * 0.95)
+            note = "支撐已破 → 用近 20 日低點或 -5% (fallback)"
+
+    return float(raw_target), note
 
 
 def _weekly_bias(weekly_df: pd.DataFrame | None,
