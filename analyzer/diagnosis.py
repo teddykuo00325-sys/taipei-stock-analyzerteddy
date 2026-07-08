@@ -370,6 +370,41 @@ def diagnose(df: pd.DataFrame,
     # R:R 改以「實際進場價」計算：
     # 若現價已高於進場區，預期等拉回至進場區上緣執行 → 以進場上緣計算
     # 否則以現價計算
+    # ★ Sanity check：停損 vs 進場區間位置
+    # Long/偏多：停損必須 < entry_zone.lower（下方保護）
+    # Short/偏空：停損必須 > entry_zone.upper（上方保護）
+    # 若違反 → 用 abs_stop (前 20 日低) 或 entry_zone 邊界外 3%
+    if entry_zone and stops.get("short_stop") is not None:
+        stop = float(stops["short_stop"])
+        if stance in ("多方", "偏多"):
+            entry_low = float(entry_zone[0])
+            if stop >= entry_low:
+                # 停損跑到進場區內或上方 → 用 abs_stop / entry_low × 0.97
+                abs_s = stops.get("abs_stop")
+                fallback = min(
+                    float(abs_s) if abs_s is not None else entry_low * 0.97,
+                    entry_low * 0.97,
+                )
+                stops["short_stop"] = round(fallback, 2)
+        elif stance in ("空方", "偏空"):
+            entry_high = float(entry_zone[1])
+            if stop <= entry_high:
+                abs_s = stops.get("abs_stop")
+                fallback = max(
+                    float(abs_s) if abs_s is not None else entry_high * 1.03,
+                    entry_high * 1.03,
+                )
+                stops["short_stop"] = round(fallback, 2)
+
+    # ★ Sanity check：目標價空間上限（短線 5-10 日推薦不合理超過 ±20%）
+    # 型態突破推算 (neckline + gap) 有時 gap 太大導致 target = +50%+，
+    # 超過現實可達到範圍 → 截斷至 ±20%
+    if target_price is not None:
+        if stance in ("多方", "偏多"):
+            target_price = min(target_price, price * 1.20)
+        elif stance in ("空方", "偏空"):
+            target_price = max(target_price, price * 0.80)
+
     risk_reward = None
     entry_ref = price
     if entry_zone and price > entry_zone[1]:

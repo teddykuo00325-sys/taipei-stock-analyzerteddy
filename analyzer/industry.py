@@ -142,12 +142,16 @@ def snapshot(max_age_sec: int = 86400) -> pd.DataFrame:
     now = time()
     if _cache["df"] is not None and now - _cache["time"] < max_age_sec:
         return _cache["df"]
+    df = None
     try:
         df = _fetch_raw()
         if df is not None and not df.empty:
             _save_to_db(df)  # 成功時持久化
     except Exception:
-        # API 失敗 → 試 DB fallback
+        df = None
+    # ★ 若 API 抓不到（雲端 geo-block 常回空 df 但不 raise）→ 用 DB fallback
+    # 之前只在 except 才 fallback，導致「回空 df 但沒 exception」情況 df=空
+    if df is None or df.empty:
         df = _load_from_db()
         if df.empty:
             return pd.DataFrame(columns=["code", "short_name", "full_name",
