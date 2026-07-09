@@ -139,23 +139,37 @@ def _load_from_db() -> pd.DataFrame:
 
 
 def snapshot(max_age_sec: int = 86400) -> pd.DataFrame:
+    """取得公司基本資料 df.
+
+    策略：**DB 為主，API 為輔**（因 API 偶爾只回部分公司，DB 累積完整）：
+      1. 先讀 DB（累積 1900+ 筆完整資料）
+      2. 抓 API 若成功且行數 >= DB → 用 API 版本並存進 DB
+      3. 否則保持 DB（防雲端 API 部分回應污染 DB）
+    """
     now = time()
     if _cache["df"] is not None and now - _cache["time"] < max_age_sec:
         return _cache["df"]
-    df = None
+
+    # 先讀 DB 當基底
+    db_df = _load_from_db()
+    api_df = None
     try:
-        df = _fetch_raw()
-        if df is not None and not df.empty:
-            _save_to_db(df)  # 成功時持久化
+        api_df = _fetch_raw()
     except Exception:
-        df = None
-    # ★ 若 API 抓不到（雲端 geo-block 常回空 df 但不 raise）→ 用 DB fallback
-    # 之前只在 except 才 fallback，導致「回空 df 但沒 exception」情況 df=空
-    if df is None or df.empty:
-        df = _load_from_db()
-        if df.empty:
-            return pd.DataFrame(columns=["code", "short_name", "full_name",
-                                          "ind_code", "name_en", "industry"])
+        api_df = None
+
+    # 只有當 API 資料 >= DB 時才用（避免部分回應污染 DB）
+    if api_df is not None and not api_df.empty:
+        if db_df.empty or len(api_df) >= len(db_df):
+            _save_to_db(api_df)
+            df = api_df
+        else:
+            df = db_df   # API 資料不完整，keep DB
+    elif not db_df.empty:
+        df = db_df
+    else:
+        return pd.DataFrame(columns=["code", "short_name", "full_name",
+                                      "ind_code", "name_en", "industry"])
     _cache["df"] = df
     _cache["time"] = now
     return df

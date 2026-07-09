@@ -406,11 +406,23 @@ def _section_picks(top_n: int = 5) -> str:
     except Exception:
         _disposal_map = {}
 
+    # ★ R:R 硬過濾 — 剔除 R:R < 1.5 的低品質推薦，避免推「⚠️ 偏低」給 user
+    # 若過濾後不足 top_n，就少推幾檔（保質重於保量）
+    def _rr_ok(p: dict) -> bool:
+        diag = p.get('_diag')
+        if not diag:
+            return True   # 沒 diag 資料，保守放行
+        rr = getattr(diag, 'risk_reward', None)
+        return rr is None or rr >= 1.5
+
+    long_filtered = ([p for p in rep_l.picks_filtered if _rr_ok(p)][:top_n]
+                     if rep_l.proceed else [])
+    short_filtered = ([p for p in rep_s.picks_filtered if _rr_ok(p)][:top_n]
+                      if rep_s.proceed else [])
+
     # 緩存到模組級供之後 auto-lock 使用
-    _LAST_PICKS["long"] = (
-        list(rep_l.picks_filtered[:top_n]) if rep_l.proceed else [])
-    _LAST_PICKS["short"] = (
-        list(rep_s.picks_filtered[:top_n]) if rep_s.proceed else [])
+    _LAST_PICKS["long"] = long_filtered
+    _LAST_PICKS["short"] = short_filtered
     _LAST_PICKS["long_hold_days"] = rep_l.hold_days or 5
     _LAST_PICKS["short_hold_days"] = rep_s.hold_days or 5
     _LAST_PICKS["long_capital_scale"] = rep_l.capital_scale or 1.0
@@ -433,20 +445,34 @@ def _section_picks(top_n: int = 5) -> str:
 
     lines = []
     if rep_l.proceed:
-        n_l = len(rep_l.picks_filtered[:top_n])
-        lines.append(f"\n🚀 <b>系統推薦做多 Top {n_l}</b>"
-                     f"（已套 5 層過濾）")
-        for i, p in enumerate(rep_l.picks_filtered[:top_n], 1):
-            lines.append(_fmt_pick(i, p, side="long"))
+        n_l = len(long_filtered)
+        if n_l == 0:
+            lines.append(
+                "\n🚫 <b>做多：</b>候選 R:R 全 < 1.5，"
+                "今日無合格做多標的")
+        else:
+            n_raw = len(rep_l.picks_filtered)
+            note = (f"（{n_raw} 檔候選過濾至 {n_l} 檔 R:R ≥ 1.5）"
+                    if n_raw > n_l else "（已套 5 層過濾）")
+            lines.append(f"\n🚀 <b>系統推薦做多 Top {n_l}</b>{note}")
+            for i, p in enumerate(long_filtered, 1):
+                lines.append(_fmt_pick(i, p, side="long"))
     else:
         lines.append(f"\n🚫 <b>做多：</b>{rep_l.skip_reason}")
 
     if rep_s.proceed:
-        n_s = len(rep_s.picks_filtered[:top_n])
-        lines.append(f"\n🐻 <b>系統推薦做空 Top {n_s}</b>"
-                     f"（已套 5 層過濾）")
-        for i, p in enumerate(rep_s.picks_filtered[:top_n], 1):
-            lines.append(_fmt_pick(i, p, side="short"))
+        n_s = len(short_filtered)
+        if n_s == 0:
+            lines.append(
+                "\n🚫 <b>做空：</b>候選 R:R 全 < 1.5，"
+                "今日無合格做空標的")
+        else:
+            n_raw = len(rep_s.picks_filtered)
+            note = (f"（{n_raw} 檔候選過濾至 {n_s} 檔 R:R ≥ 1.5）"
+                    if n_raw > n_s else "（已套 5 層過濾）")
+            lines.append(f"\n🐻 <b>系統推薦做空 Top {n_s}</b>{note}")
+            for i, p in enumerate(short_filtered, 1):
+                lines.append(_fmt_pick(i, p, side="short"))
     else:
         lines.append(f"\n🚫 <b>做空：</b>{rep_s.skip_reason}")
     return "\n".join(lines)

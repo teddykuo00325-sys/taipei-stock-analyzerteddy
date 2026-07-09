@@ -100,8 +100,16 @@ def evaluate(code: str) -> AlertResult | None:
         return None
 
     df = indicators.add_all(df_raw)
+    # ★ 過濾 NaN close 的 rows（yfinance monkey-patch 超時 fetch 到部分空值）
+    # 若最後一 row close 為 NaN → 找往前最後一個非 NaN
+    df = df[df["close"].notna()]
+    if df.empty or len(df) < 60:
+        return None  # 資料完全缺失時 skip 而非印 nan
+
     last = df.iloc[-1]
     close = float(last["close"])
+    if pd.isna(close) or close <= 0:
+        return None  # 額外守門
 
     # 高點 / 回檔
     h_20 = float(df["high"].tail(20).max())
@@ -109,9 +117,13 @@ def evaluate(code: str) -> AlertResult | None:
     h_252 = float(df["high"].tail(252).max()) if len(df) >= 252 \
         else float(df["high"].max())
 
+    # NaN 守門 — 若 high 有 NaN 導致計算失敗直接 skip
+    if pd.isna(h_20) or pd.isna(h_60) or h_20 <= 0 or h_60 <= 0:
+        return None
+
     pb_20 = (close / h_20 - 1) * 100
     pb_60 = (close / h_60 - 1) * 100
-    pb_252 = (close / h_252 - 1) * 100
+    pb_252 = (close / h_252 - 1) * 100 if h_252 > 0 else 0
 
     # 技術位置
     rsi = float(last.get("rsi")) if pd.notna(last.get("rsi")) else None
