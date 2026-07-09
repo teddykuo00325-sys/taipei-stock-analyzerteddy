@@ -947,6 +947,22 @@ def send_daily_report(top_n: int = 5,
         except Exception as e:
             expired_log.append(f"auto_close 失敗: {str(e)[:60]}")
 
+    # === Phase 2.5: MA10 停損檢查（防「用戶沒設 midday cron」情境）===
+    # 08:30 也掃 MA10 停損，用最新 K 線。跟 midday cron 是 belt-and-suspenders
+    # 冗餘設計 — 兩者都跑 = 早晚各檢查一次
+    stop_log = []
+    if auto_track:
+        try:
+            triggered = realbacktest.check_stop_loss_open_sessions(
+                force_update=True)
+            for sid, items in triggered.items():
+                for code, name, side, reason, exit_p in items:
+                    emoji = "🛑" if side == "long" else "↩️"
+                    stop_log.append(
+                        f"{emoji} #{sid} {code} {name} @ {exit_p:.2f}")
+        except Exception as e:
+            stop_log.append(f"stop_check 失敗: {str(e)[:60]}")
+
     if auto_fetch_etf:
         try:
             metas = etf.top_n(5, taiwan_only=True)
@@ -997,6 +1013,8 @@ def send_daily_report(top_n: int = 5,
     suffix_parts = []
     if expired_log:
         suffix_parts.append(f"結算 {len(expired_log)}: " + "; ".join(expired_log))
+    if stop_log:
+        suffix_parts.append(f"停損 {len(stop_log)}: " + "; ".join(stop_log))
     if lock_log:
         suffix_parts.append(f"鎖入: " + "; ".join(lock_log))
     if private_log:
