@@ -100,29 +100,64 @@ def _restore_ohlcv_from_repo():
 
 
 def _format_tg_message(triggered: dict, sessions_map: dict) -> str:
-    """組合 TG 訊息 HTML."""
+    """組合 TG 訊息 HTML.
+
+    ★ 以「標的」為主呈現而非以 session — 使用者關心「我要出哪些股」
+    而非「哪個 session 觸發」. 同一 code 出現在多 session 只印一次，
+    但列出跨幾個 session（提醒集中風險）.
+    """
     now = datetime.now(TPE_TZ).strftime("%Y-%m-%d %H:%M")
     total = sum(len(v) for v in triggered.values())
+
+    # 用 code 聚合跨 session 觸發
+    by_code = {}  # {code: {name, side, sessions: [(sid, exit_p, reason)]}}
+    for sid, items in triggered.items():
+        for code, name, side, reason, exit_p in items:
+            key = code
+            if key not in by_code:
+                by_code[key] = {
+                    "name": name, "side": side, "sessions": []
+                }
+            by_code[key]["sessions"].append((sid, exit_p, reason))
+
+    unique_n = len(by_code)
     lines = [
         f"⚠️ <b>{now} 盤中停損 Alert</b>",
         "━━━━━━━━━━━━━━━━━━━",
-        f"🛑 觸發 <b>{total}</b> 檔 MA10 技術停損（跨 {len(triggered)} 個 session）",
+        f"🛑 觸發 <b>{unique_n}</b> 檔標的觸及 MA10 停損"
+        + (f"（共 {total} 筆跨 session）" if total > unique_n else ""),
         "",
     ]
-    for sid, items in triggered.items():
-        sess = sessions_map.get(sid)
-        side_emoji = "🚀" if sess and sess.side == "long" else "🐻"
-        side_zh = "做多" if sess and sess.side == "long" else "做空"
+
+    # 依「跨幾 session」降序（重複次數多的優先看，因為集中風險大）
+    sorted_codes = sorted(
+        by_code.items(),
+        key=lambda kv: -len(kv[1]["sessions"])
+    )
+
+    for code, data in sorted_codes:
+        name = data["name"]
+        side = data["side"]
+        sess_list = data["sessions"]
+        emoji = "🛑" if side == "long" else "↩️"
+        side_zh = "做多" if side == "long" else "做空"
+
+        # 集中風險警示
+        concentration = ""
+        if len(sess_list) >= 2:
+            concentration = (f"  ⚠️ <b>跨 {len(sess_list)} 個 session</b> "
+                             f"= 集中部位風險")
+
+        # 取代表性 exit（各 session 應該接近，用第一筆）
+        rep_sid, rep_exit, rep_reason = sess_list[0]
+        session_ids = ", ".join(f"#{s[0]}" for s in sess_list)
+
         lines.append(
-            f"<b>{side_emoji} session #{sid} {side_zh}</b>"
-            + (f" (lock {sess.lock_date})" if sess else "")
+            f"{emoji} <b>{code} {name}</b> ({side_zh}) "
+            f"@ {rep_exit:.2f}{concentration}"
         )
-        for code, name, side, reason, exit_p in items:
-            emoji = "🛑" if side == "long" else "↩️"
-            lines.append(
-                f"   {emoji} <b>{code} {name}</b> @ {exit_p:.2f}\n"
-                f"      <i>{reason}</i>"
-            )
+        lines.append(f"   <i>{rep_reason}</i>")
+        lines.append(f"   Session: {session_ids}")
         lines.append("")
 
     lines.append("<i>系統已自動標記 exit — 請儘快實盤出場</i>")

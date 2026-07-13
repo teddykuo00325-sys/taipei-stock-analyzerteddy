@@ -54,7 +54,8 @@ jobs:
             echo "realbacktest.db 無變動（無停損觸發），跳過 commit"
             exit 0
           fi
-          git commit -m "auto(midday-stop): $(TZ=Asia/Taipei date +%Y-%m-%d\\ %H:%M) MA10 exit"
+          STAMP=$(TZ=Asia/Taipei date +'%Y-%m-%d %H:%M')
+          git commit -m "auto(midday-stop): ${STAMP} MA10 exit"
           for i in 1 2 3 4 5; do
             if git push; then
               echo "✅ push 成功 (attempt $i)"
