@@ -375,6 +375,10 @@ def lock_session_auto(side: Literal["long", "short"],
                        note: str | None = None) -> int | None:
     """TG 自動 lock — 同日同方向已存在 auto session 則靜默 skip（回傳 None）.
 
+    ★ 防重複部位：先過濾掉「已在其他 open session 有部位」的 code —
+    避免系統連續多天推同股 → 各自 lock 進不同 session → 部位變 N 倍集中.
+    若過濾後 picks 為空 → 全數已有部位，靜默 skip.
+
     用於每日 08:30 TG 推送後自動把推薦 picks 紙上交易，後續結算累積 track record.
     """
     today = date.today().isoformat()
@@ -386,8 +390,34 @@ def lock_session_auto(side: Literal["long", "short"],
         ).fetchone()
         if existing:
             return None
+
+        # 收集所有 open TG_auto session 中已有部位的 (code, side)
+        # 只擋同 side 的（做多 A 股 + 做空 A 股仍可並存作對沖）
+        rows = c.execute("""
+            SELECT DISTINCT h.code FROM realbt_holding h
+            JOIN realbt_session s ON s.id = h.session_id
+            WHERE s.status = 'open'
+              AND s.side = ?
+              AND s.note LIKE ?
+              AND (h.exit_price IS NULL)
+        """, (side, f"{AUTO_NOTE_PREFIX}%")).fetchall()
+        already_held = {r[0] for r in rows}
+
+    # 過濾 picks
+    original_n = len(picks)
+    picks_filtered = [p for p in picks
+                      if str(p.get('代號', '')).strip() not in already_held]
+    skipped_n = original_n - len(picks_filtered)
+
+    if not picks_filtered:
+        # 全數已有部位 → 靜默 skip（附錄 log 用）
+        return None
+
     full_note = f"{AUTO_NOTE_PREFIX} {note or ''}".strip()
-    return lock_session(side, picks, capital=capital,
+    if skipped_n > 0:
+        full_note += f" (skipped {skipped_n} dup codes)"
+
+    return lock_session(side, picks_filtered, capital=capital,
                          hold_days=hold_days, note=full_note,
                          use_live_entry=True)
 
