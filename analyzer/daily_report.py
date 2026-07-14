@@ -963,13 +963,15 @@ def send_daily_report(top_n: int = 5,
         except Exception as e:
             stop_log.append(f"stop_check 失敗: {str(e)[:60]}")
 
-    if auto_fetch_etf:
+    # ★ auto_fetch_etf 移到 scripts/send_daily_report.py 呼叫 build 之前執行，
+    # 這裡改為「若 prebuilt_text 沒提供才 fetch（本機直接呼叫 send_daily_report 場景）」
+    if auto_fetch_etf and not prebuilt_text:
         try:
             metas = etf.top_n(5, taiwan_only=True)
             if metas:
                 etf_scraper.fetch_all([m.code for m in metas])
-        except Exception:
-            pass
+        except Exception as _e:
+            print(f"[auto_fetch_etf] {_e}", flush=True)
 
     # 1) 公開版 → 預設 TELEGRAM_CHAT_ID（channel）
     # 若外部已 build（e.g. preview 用），直接用 prebuilt_text 避免重複跑 screener

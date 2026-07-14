@@ -215,7 +215,24 @@ def main() -> int:
     # 3) 組報告 (build 一次，preview + send 共用避免重複跑 screener)
     text = None
     try:
-        from analyzer import daily_report
+        from analyzer import daily_report, etf, etf_scraper
+        # ★ ETF 抓取移到 build 之前 — 舊版在 send_daily_report 內部
+        # auto_fetch_etf 位置導致 build 用舊資料建 ETF section，
+        # 之後 fetch 也來不及影響本次推送.
+        try:
+            metas = etf.top_n(5, taiwan_only=True)
+            if metas:
+                fetch_r = etf_scraper.fetch_all([m.code for m in metas])
+                # 逐個 log — 若雲端 IP 被 MoneyDJ 擋這裡會看到 error
+                for code, res in (fetch_r or {}).items():
+                    status = "✅" if res.ok else "❌"
+                    detail = (f"date={res.date} n={len(res.holdings)}"
+                              if res.ok else f"err={res.error[:60]}")
+                    print(f"[etf-scraper] {status} {code} {detail}",
+                          flush=True)
+        except Exception as _e:
+            print(f"[etf-scraper] FAILED: {_e}", flush=True)
+
         text = daily_report.build_daily_report(top_n=5)
         # Preview log — 印出 HTML 移除後的純文字
         print("=" * 60)
