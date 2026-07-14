@@ -5,6 +5,15 @@ name: Daily Telegram Report (08:30 Taipei)
 # 重複推送防護：scripts/send_daily_report.py _check_gh_runs_today() 查今日 runs
 on:
   workflow_dispatch:
+    inputs:
+      force:
+        description: '強制推送（略過今日已推送 dedup）'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
 
 permissions:
   contents: write             # ★ write 才能 commit realbacktest.db track record 資料
@@ -39,6 +48,8 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           # ★ 私人收件人 — Track Record + 資金配置只推到此 chat（不送 channel）
           TELEGRAM_CHAT_ID_PRIVATE: ${{ secrets.TELEGRAM_CHAT_ID_PRIVATE }}
+          # 手動 dispatch 時可指定 force=true 略過今日已推送檢查
+          FORCE_SEND: ${{ github.event.inputs.force == 'true' && '1' || '' }}
           PYTHONIOENCODING: utf-8
         run: |
           python scripts/send_daily_report.py
