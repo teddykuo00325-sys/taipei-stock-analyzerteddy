@@ -62,8 +62,15 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          # 只加實際存在的 DB（disposal_history.db 首次 run 才會建立）
-          for db in data/realbacktest.db data/disposal_history.db; do
+          # 只加實際存在的 DB — 5 個持久化 DB 都 commit 回 repo
+          # 缺 etf.db 曾導致 ETF holdings 抓到新資料但沒 commit → 下次 checkout
+          # 又是舊資料 → 「主動式 ETF 進出沒更新」bug (07-16 用戶回報)
+          for db in \
+              data/realbacktest.db \
+              data/disposal_history.db \
+              data/etf.db \
+              data/shareholders.db \
+              data/industry.db; do
             if [ -f "$db" ]; then
               git add "$db"
             fi
