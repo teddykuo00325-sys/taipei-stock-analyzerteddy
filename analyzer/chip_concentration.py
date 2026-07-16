@@ -187,7 +187,7 @@ def detect_signal(code: str) -> ChipSignal | None:
         if broke_4m_low:
             reason.append(f"破 4 月低 ({low_4m:.2f})")
         if avg_volume_lots < MIN_AVG_VOLUME_LOTS:
-            reason.append(f"量不足 {avg_volume_lots:.0f}<2000")
+            reason.append(f"量不足 {avg_volume_lots:.0f}&lt;2000")
         notes.append(
             f"L2+L3 -{abs(weekly_change_pct):.1f}% 但守門失敗 "
             f"({', '.join(reason)})")

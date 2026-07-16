@@ -125,7 +125,7 @@ def detect_regime(as_of_date: str | None = None) -> MarketRegime:
                 "bear", "🟢 強空頭",
                 close, ma20, ma60, gap,
                 allow_long=False, allow_short=True, capital_scale=1.0,
-                note=f"MA20 ({ma20:.0f}) < MA60 ({ma60:.0f}) "
+                note=f"MA20 ({ma20:.0f}) &lt; MA60 ({ma60:.0f}) "
                      f"{gap:.1f}%，禁開多單"))
         return _ret(MarketRegime(
             "sideways", "⚪ 整理",

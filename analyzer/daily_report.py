@@ -448,7 +448,7 @@ def _section_picks(top_n: int = 5) -> str:
         n_l = len(long_filtered)
         if n_l == 0:
             lines.append(
-                "\n🚫 <b>做多：</b>候選 R:R 全 < 1.5，"
+                "\n🚫 <b>做多：</b>候選 R:R 全 &lt; 1.5，"
                 "今日無合格做多標的")
         else:
             n_raw = len(rep_l.picks_filtered)
@@ -464,7 +464,7 @@ def _section_picks(top_n: int = 5) -> str:
         n_s = len(short_filtered)
         if n_s == 0:
             lines.append(
-                "\n🚫 <b>做空：</b>候選 R:R 全 < 1.5，"
+                "\n🚫 <b>做空：</b>候選 R:R 全 &lt; 1.5，"
                 "今日無合格做空標的")
         else:
             n_raw = len(rep_s.picks_filtered)
