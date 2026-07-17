@@ -261,16 +261,35 @@ def _fetch_meta(code: str) -> EtfMeta | None:
 
 
 def is_taiwan_focused(m: EtfMeta) -> bool:
-    """是否為台股專注主動 ETF（排除全球/區域型）."""
+    """是否為台股專注主動 ETF.
+
+    改用「排除海外」邏輯（whitelist by exclusion）— 舊版要求名稱含
+    「台/台灣/Taiwan」才通過，但很多台股主動 ETF 名稱沒此字（如
+    「主動復華未來 50」實際投資台灣 50 大卻被誤 filter）.
+
+    只要沒明確標「全球/US/日本/中國」等海外關鍵字，預設視為台股.
+    """
     name_zh = m.name or ""
     name_en = (m.name_en or "").lower()
-    combined = name_zh + " " + name_en
-    # 排除全球/世界型
-    if "global" in name_en or "world" in name_en or "全球" in name_zh:
-        return False
-    # 台灣關鍵字（中或英）
-    return ("taiwan" in name_en or " tw " in f" {name_en} "
-            or "台股" in name_zh or "台灣" in name_zh)
+    family = (m.family or "").lower()
+    combined_lower = (name_zh + " " + name_en + " " + family).lower()
+
+    # 明確排除海外/區域型
+    OVERSEAS_KEYWORDS = [
+        "global", "world", "全球", "世界",
+        "us growth", "us tech", "u.s.", "美國", "美股",
+        "japan", "日本",
+        "china ", "中國",  # 加空格避免 "china..." 誤傷
+        "asia", "亞洲",
+        "korea", "韓國",
+        "vietnam", "越南",
+        "innovation active",  # UPAMC Global Innovation
+        "ark innovation",     # ARK Innovation
+    ]
+    for kw in OVERSEAS_KEYWORDS:
+        if kw in combined_lower:
+            return False
+    return True
 
 
 def _load_aum_from_db() -> list[EtfMeta]:
