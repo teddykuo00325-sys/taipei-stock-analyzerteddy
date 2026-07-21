@@ -127,12 +127,22 @@ def detect_regime(as_of_date: str | None = None) -> MarketRegime:
                 allow_long=False, allow_short=True, capital_scale=1.0,
                 note=f"MA20 ({ma20:.0f}) &lt; MA60 ({ma60:.0f}) "
                      f"{gap:.1f}%，禁開多單"))
+        # 走到這裡有兩種情況：
+        # (a) abs(gap) < 3 → 均線糾結，真整理
+        # (b) abs(gap) ≥ 3 但 close 與 MA20 反向 → MA 展開但收盤未站穩
+        if abs(gap) < REGIME_BULL_GAP:
+            note_txt = (f"MA20-MA60 差距 {gap:+.1f}% 在 ±3% 內，"
+                        f"雙向開倉但資金縮減 50%")
+        else:
+            direction = "上" if gap >= 0 else "下"
+            note_txt = (f"MA20-MA60 展 {gap:+.1f}% 偏{direction}，"
+                        f"但收盤 {close:.0f} 未站穩 MA20 ({ma20:.0f})，"
+                        f"視為整理；雙向開倉但資金縮減 50%")
         return _ret(MarketRegime(
             "sideways", "⚪ 整理",
             close, ma20, ma60, gap,
             allow_long=True, allow_short=True, capital_scale=0.5,
-            note=f"MA20-MA60 差距 {gap:+.1f}% 在 ±3% 內，"
-                 f"雙向開倉但資金縮減 50%"))
+            note=note_txt))
     except Exception as e:
         return _ret(MarketRegime(
             "sideways", "整理（例外）",

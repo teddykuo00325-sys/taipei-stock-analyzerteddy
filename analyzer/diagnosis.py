@@ -371,44 +371,62 @@ def diagnose(df: pd.DataFrame,
     # 若現價已高於進場區，預期等拉回至進場區上緣執行 → 以進場上緣計算
     # 否則以現價計算
     # ★ Sanity check：停損 vs 進場區間位置
-    # Long/偏多：停損必須 < entry_zone.lower（下方保護）
-    # Short/偏空：停損必須 > entry_zone.upper（上方保護）
-    # 若違反 → 用 abs_stop (前 20 日低) 或 entry_zone 邊界外 3%
+    # Long/偏多：停損必須 < entry_zone.lower × 0.98（至少 2% 保護距離）
+    # Short/偏空：停損必須 > entry_zone.upper × 1.02（至少 2% 保護距離）
+    # 若違反 → 用 abs_stop (前 20 日低) 或 entry_zone 邊界外 2%
+    # MIN_STOP_PCT = 2% 是為了防止 MA10 × 0.98 剛好貼近 entry_lower 導致
+    # R:R 灌水到 13+（真實：0.5% 停損被任何盤中噪音打到就出場）
+    MIN_STOP_PCT = 0.02
     if entry_zone and stops.get("short_stop") is not None:
         stop = float(stops["short_stop"])
         if stance in ("多方", "偏多"):
             entry_low = float(entry_zone[0])
-            if stop >= entry_low:
-                # 停損跑到進場區內或上方 → 用 abs_stop / entry_low × 0.97
+            max_stop_allowed = entry_low * (1 - MIN_STOP_PCT)
+            if stop >= max_stop_allowed:
+                # 停損跑到進場區內或距離太近 → 用 abs_stop 或 entry_lower × 0.98
                 abs_s = stops.get("abs_stop")
                 fallback = min(
-                    float(abs_s) if abs_s is not None else entry_low * 0.97,
-                    entry_low * 0.97,
+                    float(abs_s) if abs_s is not None else max_stop_allowed,
+                    max_stop_allowed,
                 )
                 stops["short_stop"] = round(fallback, 2)
         elif stance in ("空方", "偏空"):
             entry_high = float(entry_zone[1])
-            if stop <= entry_high:
+            min_stop_allowed = entry_high * (1 + MIN_STOP_PCT)
+            if stop <= min_stop_allowed:
                 abs_s = stops.get("abs_stop")
                 fallback = max(
-                    float(abs_s) if abs_s is not None else entry_high * 1.03,
-                    entry_high * 1.03,
+                    float(abs_s) if abs_s is not None else min_stop_allowed,
+                    min_stop_allowed,
                 )
                 stops["short_stop"] = round(fallback, 2)
+
+    # R:R 進場基準（同時作 target cap 基準，兩者對齊）：
+    # 現價 > entry_upper → 用 entry_upper（等拉回情境）
+    # 現價 < entry_lower → 用 entry_lower（等突破情境，多空皆可能）
+    # 其他 → 用現價
+    entry_ref = price
+    if entry_zone:
+        if price > entry_zone[1]:
+            entry_ref = float(entry_zone[1])
+        elif price < entry_zone[0]:
+            entry_ref = float(entry_zone[0])
 
     # ★ Sanity check：目標價空間上限（短線 5-10 日推薦不合理超過 ±20%）
     # 型態突破推算 (neckline + gap) 有時 gap 太大導致 target = +50%+，
     # 超過現實可達到範圍 → 截斷至 ±20%
+    # 基準對齊 TG 顯示：daily_report._pick_trade_details 用 entry midpoint 算
+    # target_pct，這裡也用 midpoint（若無 entry_zone 則回落至 price），
+    # 確保 TG 上顯示的 target_pct 也 ≤ 20%
+    cap_ref = ((entry_zone[0] + entry_zone[1]) / 2
+               if entry_zone else price)
     if target_price is not None:
         if stance in ("多方", "偏多"):
-            target_price = min(target_price, price * 1.20)
+            target_price = min(target_price, cap_ref * 1.20)
         elif stance in ("空方", "偏空"):
-            target_price = max(target_price, price * 0.80)
+            target_price = max(target_price, cap_ref * 0.80)
 
     risk_reward = None
-    entry_ref = price
-    if entry_zone and price > entry_zone[1]:
-        entry_ref = float(entry_zone[1])
     if target_price and stops.get("short_stop"):
         reward = abs(target_price - entry_ref)
         risk = abs(entry_ref - stops["short_stop"])
