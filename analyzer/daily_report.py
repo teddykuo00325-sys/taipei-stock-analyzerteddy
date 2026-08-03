@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import html
 from datetime import date, datetime, timedelta, timezone
 
 from . import (backtest_filter, dca_alert, disposal, etf, etf_scraper,
@@ -387,7 +388,9 @@ def _section_picks(top_n: int = 5) -> str:
             pre_filter_lots_today=200,
         )
     except Exception as e:
-        return f"⚠️ 選股失敗：{str(e)[:100]}"
+        # ★ Escape exception msg — Python exceptions often contain
+        # "<class 'X'>" / "<method-wrapper ...>" that break TG HTML parser
+        return f"⚠️ 選股失敗：{html.escape(str(e)[:100])}"
     if res["passed"] == 0:
         return "⚠️ 今日無通過篩選的股票"
 
@@ -628,20 +631,15 @@ def _section_track_record() -> str:
         kpi = performance.summary_kpis(initial_capital=1.0)
         if kpi and kpi.get("n_holdings", 0) > 0:
             sys_net = kpi.get("total_return_net_pct", 0)
-            # 同期 TWII
-            first = kpi.get("first_date")
-            last = kpi.get("last_date")
-            twii_ret = None
-            if first and last:
-                bench = performance.twii_benchmark(first, last)
-                if not bench.empty:
-                    twii_ret = (float(bench["twii_norm"].iloc[-1]) - 1) * 100
+            # ★ B2 修：Alpha 對比改用「跟著系統 session 進出的 TWII 複利報酬」
+            # 而非 buy-and-hold — 這樣才是 apple-to-apple 比較
+            twii_ret = performance.twii_matched_return()
             alpha_str = ""
             if twii_ret is not None:
                 alpha = sys_net - twii_ret
                 alpha_icon = "🔴" if alpha > 0 else "🟢"
-                alpha_str = (f"\n   {alpha_icon} 累積 vs TWII：系統 "
-                             f"<b>{sys_net:+.2f}%</b> ｜ "
+                alpha_str = (f"\n   {alpha_icon} 累積 vs TWII（同期進出）："
+                             f"系統 <b>{sys_net:+.2f}%</b> ｜ "
                              f"TWII {twii_ret:+.2f}% ｜ "
                              f"Alpha <b>{alpha:+.2f}%</b>")
             else:
@@ -707,7 +705,7 @@ def _section_etf_changes(max_etfs: int = 5) -> str:
     try:
         metas = etf.top_n(max_etfs, taiwan_only=True)
     except Exception as e:
-        return f"\n📊 <b>主動式 ETF</b>：抓取失敗 ({str(e)[:60]})"
+        return f"\n📊 <b>主動式 ETF</b>：抓取失敗 ({html.escape(str(e)[:60])})"
     if not metas:
         return ("\n📊 <b>主動式 ETF</b>：暫無資料"
                 "（yfinance 抓 AUM 失敗 + DB 無快照）")

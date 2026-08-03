@@ -14,7 +14,29 @@ Streamlit Secrets 設定:
 """
 from __future__ import annotations
 
+import re
 import requests
+
+
+def _safe_truncate(text: str, limit: int) -> str:
+    """截斷 HTML 訊息 — 避免在 <b>...</b> 或 <i>...</i> 中間切斷.
+
+    先嘗試在最後一個換行前截斷；再檢查殘留的未閉合 tag，補上關閉標籤.
+    """
+    if len(text) <= limit:
+        return text
+    # 先切到 limit-100（給後綴訊息留空間），優先在 \n 邊界斷
+    cut = text[:limit - 100]
+    nl = cut.rfind("\n")
+    if nl > limit // 2:  # 找得到合理的換行點
+        cut = cut[:nl]
+    # 補上未閉合 tag（只處理 <b> <i> <code> <pre> <a>）
+    for tag in ("b", "i", "code", "pre", "a"):
+        opens = len(re.findall(rf"<{tag}[\s>]", cut))
+        closes = len(re.findall(rf"</{tag}>", cut))
+        if opens > closes:
+            cut += f"</{tag}>" * (opens - closes)
+    return cut + "\n\n…（內容過長，已截斷）"
 
 
 def _cfg() -> dict | None:
@@ -69,7 +91,7 @@ def send(text: str,
     if not c:
         return False, "未設定 Telegram secrets"
     if len(text) > 4000:
-        text = text[:3950] + "\n\n…（內容過長，已截斷）"
+        text = _safe_truncate(text, 4000)
     chats = _parse_chats(c["chat_id"])
     if not chats:
         return False, "chat_id 為空"
@@ -114,7 +136,7 @@ def send_to(text: str,
     if not chat_id:
         return False, "chat_id 為空"
     if len(text) > 4000:
-        text = text[:3950] + "\n\n…（內容過長，已截斷）"
+        text = _safe_truncate(text, 4000)
     url = f"https://api.telegram.org/bot{c['token']}/sendMessage"
     try:
         r = requests.post(url, json={
@@ -140,6 +162,22 @@ def send_long_to(text: str, chat_id: str,
     chunks: list[str] = []
     buf = ""
     for para in text.split("\n\n"):
+        # ★ 若單一 paragraph 本身就 > chunk_size，先用 \n 再切碎
+        if len(para) > chunk_size:
+            if buf:
+                chunks.append(buf)
+                buf = ""
+            sub = ""
+            for line in para.split("\n"):
+                if len(sub) + len(line) + 1 > chunk_size:
+                    if sub:
+                        chunks.append(sub)
+                    sub = line
+                else:
+                    sub = (sub + "\n" + line) if sub else line
+            if sub:
+                buf = sub
+            continue
         if len(buf) + len(para) + 2 > chunk_size:
             if buf:
                 chunks.append(buf)
@@ -174,6 +212,22 @@ def send_long(text: str, chunk_size: int = 3800,
     chunks: list[str] = []
     buf = ""
     for para in text.split("\n\n"):
+        # ★ 若單一 paragraph 本身就 > chunk_size，先用 \n 再切碎
+        if len(para) > chunk_size:
+            if buf:
+                chunks.append(buf)
+                buf = ""
+            sub = ""
+            for line in para.split("\n"):
+                if len(sub) + len(line) + 1 > chunk_size:
+                    if sub:
+                        chunks.append(sub)
+                    sub = line
+                else:
+                    sub = (sub + "\n" + line) if sub else line
+            if sub:
+                buf = sub
+            continue
         if len(buf) + len(para) + 2 > chunk_size:
             if buf:
                 chunks.append(buf)

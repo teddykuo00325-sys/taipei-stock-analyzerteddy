@@ -140,6 +140,16 @@ def _check_gh_runs_today() -> bool:
         if r.status_code != 200:
             return False
         today_tpe = datetime.now(TPE_TZ).date()
+        # ★ B3 修：找出自己的 run_number 當 tiebreaker
+        # 原本：任何 in_progress/queued/success 都 skip → 兩個並行 dispatch
+        # 會互看對方為 in_progress，雙方都 skip → 當日無推送
+        # 現在：只 skip「已完成 success」或「run_number 比自己小的還在跑」
+        # → 較早進 queue 的贏，較晚的 skip
+        current_run_number = 0
+        try:
+            current_run_number = int(os.environ.get("GITHUB_RUN_NUMBER", "0"))
+        except ValueError:
+            pass
         for run in r.json().get("workflow_runs", []):
             run_id = str(run.get("id"))
             # 排除自己
@@ -155,15 +165,17 @@ def _check_gh_runs_today() -> bool:
                 continue
             status = run.get("status", "")
             concl = run.get("conclusion", "")
-            # success / in_progress / queued 一律 skip
-            # failure / cancelled 不算（讓重試有機會）
-            if status in ("completed",):
-                if concl == "success":
-                    return True
-                # failure / cancelled / timed_out → 不擋
-            elif status in ("in_progress", "queued", "waiting", "pending"):
-                # 已有別人在跑，跳過
+            other_run_number = int(run.get("run_number", 0) or 0)
+            # 已 success → 一律 skip（今天已推過）
+            if status == "completed" and concl == "success":
                 return True
+            # 還在跑：只有 run_number 比自己「小」的才算佔位
+            # （tiebreaker：run_number 較小的 win，較大的 skip；若相等就讓自己過）
+            if status in ("in_progress", "queued", "waiting", "pending"):
+                if other_run_number and current_run_number \
+                        and other_run_number < current_run_number:
+                    return True
+                # 若自己 run_number 較小 → 過關，不 skip
         return False
     except Exception:
         return False

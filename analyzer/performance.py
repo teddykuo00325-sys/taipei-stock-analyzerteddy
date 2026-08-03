@@ -65,7 +65,8 @@ def holdings_df(auto_only: bool = True) -> pd.DataFrame:
     rows = []
     for sess in sessions:
         for h in realbacktest.list_holdings(sess.id):
-            if h.exit_price is None or h.entry_price <= 0:
+            if (h.exit_price is None or h.entry_price is None
+                    or h.entry_price <= 0):
                 continue
             if sess.side == "long":
                 pct = (h.exit_price / h.entry_price - 1) * 100
@@ -183,6 +184,49 @@ def twii_benchmark(start: str, end: str,
             columns={"Date": "date", "Close": "twii_close"})
     except Exception:
         return pd.DataFrame()
+
+
+def twii_matched_return(auto_only: bool = True) -> float | None:
+    """計算「若把 TWII 當標的、跟著系統的每筆 session 進出」的複利報酬 %.
+
+    修 B2：Alpha 對比 TWII 若用 buy-and-hold (first→last) 會不公平，
+    因系統只在 session 內持倉，session 間可能有空窗。
+    改用「TWII 在系統每筆 session 期間的複利報酬」為對照基準。
+    """
+    s = sessions_df(auto_only=auto_only)
+    if s.empty:
+        return None
+    try:
+        import yfinance as yf
+    except Exception:
+        return None
+    first = s["lock_date"].min()
+    last = s["exit_date"].max()
+    if not first or not last:
+        return None
+    try:
+        end_plus = (pd.Timestamp(last) + pd.Timedelta(days=3)).strftime("%Y-%m-%d")
+        df = yf.Ticker("^TWII").history(start=first, end=end_plus)
+        if df.empty:
+            return None
+        if df.index.tz is not None:
+            df.index = df.index.tz_localize(None)
+        df.index = pd.to_datetime(df.index).normalize()
+    except Exception:
+        return None
+    factor = 1.0
+    for _, sess in s.iterrows():
+        try:
+            e_dt = pd.Timestamp(sess["lock_date"]).normalize()
+            x_dt = pd.Timestamp(sess["exit_date"]).normalize()
+        except Exception:
+            continue
+        seg = df[(df.index >= e_dt) & (df.index <= x_dt)]
+        if len(seg) < 2:
+            continue
+        pct = float(seg["Close"].iloc[-1]) / float(seg["Close"].iloc[0]) - 1
+        factor *= 1 + pct
+    return (factor - 1) * 100
 
 
 # ============================================================

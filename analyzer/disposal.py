@@ -142,8 +142,11 @@ def fetch_all(max_age_sec: int = _TTL) -> list[DisposalStock]:
         code = str(d.get("Code", "")).strip()
         if not code:
             continue
-        # 排除權證等非股票（純股票代號為 4 位或 5 位數字，權證 6 位）
-        if len(code) >= 6 and code[0].isdigit():
+        # 排除權證（純數字 6 位以上），但保留 ETF：
+        # - 股票代號：4~5 位純數字（2330, 6415）
+        # - ETF：6 位以「00」開頭（0050, 006208, 00981A - 5-6 chars with digits/letters）
+        # - 權證：6+ 位純數字且非以 "00" 開頭（如 060871 等）
+        if len(code) >= 6 and code.isdigit() and not code.startswith("00"):
             continue
         name = str(d.get("Name", "")).strip()
         ann_d = _parse_roc_date(str(d.get("Date", "")))

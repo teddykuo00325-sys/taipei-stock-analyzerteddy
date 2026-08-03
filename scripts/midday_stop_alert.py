@@ -164,6 +164,58 @@ def _format_tg_message(triggered: dict, sessions_map: dict) -> str:
     return "\n".join(lines)
 
 
+def _check_gh_runs_today() -> bool:
+    """dedup — 若今日已有此 workflow success run 或有 run_number 更小的並行 run，回 True 表示 skip.
+
+    修 B4：midday_stop_alert 原本沒有 dedup，若 cron 重複觸發或 cron+手動同時觸發
+    會雙推 alert（每檔股票收到兩次警示）+ 重複寫 exit_price。
+    """
+    try:
+        import requests
+        repo = os.environ.get("GITHUB_REPOSITORY")
+        wf_id = os.environ.get("GITHUB_WORKFLOW_REF", "").split("@")[0]
+        wf_name = wf_id.split("/")[-1] if wf_id else "midday-stop-alert.yml"
+        current_run_id = os.environ.get("GITHUB_RUN_ID")
+        current_run_number = 0
+        try:
+            current_run_number = int(os.environ.get("GITHUB_RUN_NUMBER", "0"))
+        except ValueError:
+            pass
+        if not repo:
+            return False
+        url = (f"https://api.github.com/repos/{repo}/actions/workflows/"
+               f"{wf_name}/runs?per_page=20")
+        r = requests.get(url, timeout=10,
+                          headers={"Accept": "application/vnd.github+json"})
+        if r.status_code != 200:
+            return False
+        today_tpe = datetime.now(TPE_TZ).date()
+        for run in r.json().get("workflow_runs", []):
+            run_id = str(run.get("id"))
+            if current_run_id and run_id == current_run_id:
+                continue
+            ts = run.get("run_started_at", "")
+            try:
+                dt_utc = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                dt_tpe = dt_utc.astimezone(TPE_TZ)
+            except Exception:
+                continue
+            if dt_tpe.date() != today_tpe:
+                continue
+            status = run.get("status", "")
+            concl = run.get("conclusion", "")
+            other_run_number = int(run.get("run_number", 0) or 0)
+            if status == "completed" and concl == "success":
+                return True
+            if status in ("in_progress", "queued", "waiting", "pending"):
+                if other_run_number and current_run_number \
+                        and other_run_number < current_run_number:
+                    return True
+        return False
+    except Exception:
+        return False
+
+
 def main() -> int:
     if not os.environ.get("TELEGRAM_BOT_TOKEN"):
         print("❌ TELEGRAM_BOT_TOKEN 未設定", file=sys.stderr)
@@ -175,6 +227,11 @@ def main() -> int:
     if weekday >= 5 and os.environ.get("FORCE_SEND") != "1":
         weekday_zh = "六日"[weekday - 5]
         print(f"✅ 星期{weekday_zh} 市場休市，跳過")
+        return 0
+
+    # dedup: 今日已有成功 run 或有並行早跑者 → skip
+    if os.environ.get("FORCE_SEND") != "1" and _check_gh_runs_today():
+        print("✅ 今日已有成功 run 或並行早跑者，skip 避免雙推")
         return 0
 
     _restore_ohlcv_from_repo()

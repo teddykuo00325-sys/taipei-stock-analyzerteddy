@@ -436,7 +436,12 @@ def auto_close_expired() -> list[tuple[int, int, float]]:
             target_dt = date.fromisoformat(sess.target_exit_date)
         except Exception:
             continue
-        if today < target_dt:
+        # ★ B1 修：改成 today > target_dt（不含當日）
+        # 原本 today >= target_dt 會在 target 當日 08:30 就結算，
+        # 此時台股未開盤 → close_session 掉回 price_cache 拿「昨日收盤」
+        # → 每筆少算 1 天 P&L，Track Record 系統性偏低。
+        # 改成 target_dt+1 天再結，那時 target 當日 K 線已入庫。
+        if today <= target_dt:
             continue
         try:
             n, pnl = close_session(sess.id)
