@@ -622,13 +622,15 @@ def _section_capital_allocation() -> str:
             f"{n_picks} 檔 → 每檔 <b>{per_stock/10000:.1f} 萬</b> ｜ "
             f"持有 {hd} 日"
         )
-    # 整理判斷
-    if r.label == "sideways":
-        lines.append("   <i>📌 整理盤建議減倉至 50%，多空對沖降風險</i>")
-    elif r.label == "bull":
-        lines.append("   <i>📌 強多頭可全押多單，空單嚴格停損</i>")
-    else:
-        lines.append("   <i>📌 強空頭可全押空單，多單嚴格停損</i>")
+    # 依 regime 給資金配置提示
+    regime_hints = {
+        "sideways":  "📌 整理盤建議減倉至 50%，多空對沖降風險",
+        "bull":      "📌 強多頭可全押多單，空單嚴格停損",
+        "bear":      "📌 強空頭可全押空單，多單嚴格停損",
+        "weak_bull": "📌 弱多頭（回檔中）暫禁多，等站穩 MA20 再進；允空 70%",
+        "weak_bear": "📌 弱空頭（反彈中）暫禁空，等跌破 MA20 再空；允多 70%",
+    }
+    lines.append(f"   <i>{regime_hints.get(r.label, '📌 觀望')}</i>")
     return "\n".join(lines)
 
 

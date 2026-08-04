@@ -26,11 +26,15 @@ from . import realbacktest
 # 資料載入
 # ============================================================
 def _regime_label_at(d: str) -> str:
-    """retroactive regime lookup（bull/bear/sideways）."""
+    """retroactive regime lookup.
+
+    可能回傳：'bull' | 'bear' | 'sideways' | 'weak_bull' | 'weak_bear'
+    （2026-08 起新增 weak_bull/weak_bear 中間層）
+    """
     try:
         from . import backtest_filter
         r = backtest_filter.detect_regime(as_of_date=d)
-        return r.label  # 'bull' | 'bear' | 'sideways'
+        return r.label
     except Exception:
         return "unknown"
 
