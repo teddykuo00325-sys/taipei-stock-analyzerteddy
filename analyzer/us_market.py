@@ -196,3 +196,77 @@ def fetch_us_market(max_age_sec: int = _CACHE_TTL) -> dict:
     _cache["v"] = result
     _cache["t"] = now
     return result
+
+
+# ============================================================
+# Tier1-2B：Overnight US gap-down 風險評估
+# ============================================================
+def overnight_gap_risk() -> dict:
+    """基於美股 T-1 收盤變動，評估台股 T 開盤跳空風險.
+
+    邏輯：
+      SOX（費半）跌 &gt; 2% → 台積電/聯電/聯發科高機率同步跳空下殺 → 高風險
+      SPX 跌 &gt; 2%         → 大盤級恐慌情緒 → 高風險
+      VIX &gt; 30            → 極端恐慌 → 高風險
+
+    回傳：
+      {
+        "level": "high" / "medium" / "low",
+        "long_capital_scale": 0.0 / 0.5 / 1.0,   # 做多資金乘數
+        "reason": "SOX -3.5% overnight"
+      }
+
+    使用場景：
+      screener 或 lock_session_auto 依此決定是否減碼 / skip long entries
+    """
+    try:
+        d = fetch_us_market()
+    except Exception:
+        return {"level": "low", "long_capital_scale": 1.0, "reason": "US 資料無法取得"}
+    indices = {q.symbol: q for q in d.get("indices", [])}
+    sox_pct = indices.get("^SOX").change_pct if indices.get("^SOX") else 0
+    spx_pct = indices.get("^GSPC").change_pct if indices.get("^GSPC") else 0
+    vix = indices.get("^VIX").price if indices.get("^VIX") else 0
+
+    reasons = []
+    high_risk = False
+    med_risk = False
+
+    if sox_pct is not None and sox_pct <= -2.0:
+        high_risk = True
+        reasons.append(f"SOX {sox_pct:+.2f}%")
+    elif sox_pct is not None and sox_pct <= -1.0:
+        med_risk = True
+        reasons.append(f"SOX {sox_pct:+.2f}%")
+
+    if spx_pct is not None and spx_pct <= -2.0:
+        high_risk = True
+        reasons.append(f"SPX {spx_pct:+.2f}%")
+    elif spx_pct is not None and spx_pct <= -1.0 and not high_risk:
+        med_risk = True
+        reasons.append(f"SPX {spx_pct:+.2f}%")
+
+    if vix and vix >= 30:
+        high_risk = True
+        reasons.append(f"VIX {vix:.1f}")
+    elif vix and vix >= 25 and not high_risk:
+        med_risk = True
+        reasons.append(f"VIX {vix:.1f}")
+
+    if high_risk:
+        return {
+            "level": "high",
+            "long_capital_scale": 0.0,   # 完全 skip long
+            "reason": " ｜ ".join(reasons) or "美股大跌",
+        }
+    if med_risk:
+        return {
+            "level": "medium",
+            "long_capital_scale": 0.5,   # 減碼 50%
+            "reason": " ｜ ".join(reasons) or "美股走弱",
+        }
+    return {
+        "level": "low",
+        "long_capital_scale": 1.0,
+        "reason": "美股平穩",
+    }

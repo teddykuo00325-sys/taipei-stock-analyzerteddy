@@ -330,6 +330,8 @@ def screen(
     progress_cb: Callable[[float, str], None] | None = None,
     limit: int | None = None,
     skip_yfinance_warm: bool = False,
+    min_score_long: int | None = None,   # Tier1-3：低分過濾
+    min_score_short: int | None = None,
 ) -> dict:
     """選股器主入口.
 
@@ -472,10 +474,19 @@ def screen(
     # 兩級排序：主分數先比，同分時用 Tiebreak（3 天勝率代理指標）
     if "Tiebreak" not in full_df.columns:
         full_df["Tiebreak"] = 0
-    long_top = full_df.sort_values(
+    # ★ Tier1-3：加最低分過濾
+    # 依據 07-04~08-03 分析：score < 80 勝率 14.3%（N=7）明顯拖累
+    # 預設 long ≥ 85（過濾 39% 樣本），short ≤ -85
+    long_df = full_df
+    short_df = full_df
+    if min_score_long is not None:
+        long_df = full_df[full_df["分數"] >= min_score_long]
+    if min_score_short is not None:
+        short_df = full_df[full_df["分數"] <= min_score_short]
+    long_top = long_df.sort_values(
         by=["分數", "Tiebreak"], ascending=[False, False]
     ).head(top_n).reset_index(drop=True)
-    short_top = full_df.sort_values(
+    short_top = short_df.sort_values(
         by=["分數", "Tiebreak"], ascending=[True, True]
     ).head(top_n).reset_index(drop=True)
     return {

@@ -30,7 +30,7 @@ import yfinance as yf
 # ============================================================
 @dataclass
 class MarketRegime:
-    label: str                  # "bull" / "bear" / "sideways"
+    label: str                  # "bull" / "bear" / "sideways" / "weak_bull" / "weak_bear"
     label_zh: str               # 中文標示
     twii_close: float
     ma20: float
@@ -127,17 +127,30 @@ def detect_regime(as_of_date: str | None = None) -> MarketRegime:
                 allow_long=False, allow_short=True, capital_scale=1.0,
                 note=f"MA20 ({ma20:.0f}) &lt; MA60 ({ma60:.0f}) "
                      f"{gap:.1f}%，禁開多單"))
-        # 走到這裡有兩種情況：
-        # (a) abs(gap) < 3 → 均線糾結，真整理
-        # (b) abs(gap) ≥ 3 但 close 與 MA20 反向 → MA 展開但收盤未站穩
-        if abs(gap) < REGIME_BULL_GAP:
-            note_txt = (f"MA20-MA60 差距 {gap:+.1f}% 在 ±3% 內，"
-                        f"雙向開倉但資金縮減 50%")
-        else:
-            direction = "上" if gap >= 0 else "下"
-            note_txt = (f"MA20-MA60 展 {gap:+.1f}% 偏{direction}，"
-                        f"但收盤 {close:.0f} 未站穩 MA20 ({ma20:.0f})，"
-                        f"視為整理；雙向開倉但資金縮減 50%")
+        # ★ Tier1-1C：加「弱多頭 / 弱空頭」中間層
+        # 目的：MA 排列偏多但收盤回檔跌破 MA20 → 禁多、允空、資金 0.7
+        #      MA 排列偏空但收盤反彈突破 MA20 → 允多、禁空、資金 0.7
+        # 動機：近月 TWII −7.26% 期間，系統仍在「sideways 雙向開倉」推做多
+        #       導致 42 筆早停虧損。改後熊市回檔時做多會被擋住。
+        if gap >= REGIME_BULL_GAP and close < ma20:
+            return _ret(MarketRegime(
+                "weak_bull", "🟡 弱多頭（回檔）",
+                close, ma20, ma60, gap,
+                allow_long=False, allow_short=True, capital_scale=0.7,
+                note=(f"MA20-MA60 展 +{gap:.1f}% 趨勢向上，但收盤 "
+                      f"{close:.0f} &lt; MA20 ({ma20:.0f}) 正在回檔；"
+                      f"暫禁多單、允空 70% 資金")))
+        if gap <= REGIME_BEAR_GAP and close > ma20:
+            return _ret(MarketRegime(
+                "weak_bear", "🟠 弱空頭（反彈）",
+                close, ma20, ma60, gap,
+                allow_long=True, allow_short=False, capital_scale=0.7,
+                note=(f"MA20-MA60 展 {gap:+.1f}% 趨勢向下，但收盤 "
+                      f"{close:.0f} > MA20 ({ma20:.0f}) 正在反彈；"
+                      f"暫禁空單、允多 70% 資金")))
+        # 真正的整理：|gap| < 3%
+        note_txt = (f"MA20-MA60 差距 {gap:+.1f}% 在 ±3% 內，"
+                    f"雙向開倉但資金縮減 50%")
         return _ret(MarketRegime(
             "sideways", "⚪ 整理",
             close, ma20, ma60, gap,

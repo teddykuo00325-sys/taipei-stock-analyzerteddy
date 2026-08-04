@@ -65,12 +65,27 @@ def _section_regime() -> str:
         "bull":     "強多頭 → tiebreaker 重「不過熱+甜蜜起漲」",
         "bear":     "強空頭 → tiebreaker 重「動能+爆量」",
         "sideways": "整理 → tiebreaker 多空中性權重",
+        "weak_bull": "弱多頭 → 暫禁多、只允空 70% 資金（等回穩再進多）",
+        "weak_bear": "弱空頭 → 暫禁空、只允多 70% 資金（反彈可能有機會）",
     }.get(r.label, "")
+    # ★ Tier1-2B：加 US overnight 跳空風險提示
+    try:
+        us_risk = us_market.overnight_gap_risk()
+    except Exception:
+        us_risk = {"level": "low", "reason": ""}
+    us_line = ""
+    if us_risk["level"] == "high":
+        us_line = (f"\n   <b>⚠️ 美股跳空風險：高</b>（{us_risk['reason']}）"
+                   f" → 今日 skip 做多")
+    elif us_risk["level"] == "medium":
+        us_line = (f"\n   <b>🟡 美股跳空風險：中</b>（{us_risk['reason']}）"
+                   f" → 做多資金減 50%")
     return (f"📊 <b>大盤 regime</b>：{r.label_zh}\n"
             f"   TWII <b>{r.twii_close:,.0f}</b> ｜ "
             f"MA20-MA60 差 {r.ma_gap_pct:+.1f}%\n"
             f"   <i>{r.note}</i>\n"
-            f"   <i>⚙️ {weight_note}</i>")
+            f"   <i>⚙️ {weight_note}</i>"
+            + us_line)
 
 
 def _section_dca_alerts() -> str:
@@ -379,17 +394,21 @@ def _compute_tldr(long_picks: list, short_picks: list,
             f"   {cap_hint}")
 
 
-def _section_picks(top_n: int = 5) -> str:
-    """跑當前選股，列出 long / short top N."""
+def _section_picks(top_n: int = 4) -> str:
+    """跑當前選股，列出 long / short top N.
+
+    Tier1-3 修：top_n 從 5 → 4，並加 min_score 門檻（long ≥ 85, short ≤ -85）
+    """
     try:
+        # ★ Tier1-3：min_score 門檻 — 依 07-04~08-03 分析，score<80 勝率僅 14.3%
         res = screener.screen(
             min_avg_volume_lots=1000,
-            top_n=max(top_n * 3, 15),  # 多取讓 filter 篩
+            top_n=max(top_n * 3, 15),
             pre_filter_lots_today=200,
+            min_score_long=85,
+            min_score_short=-85,
         )
     except Exception as e:
-        # ★ Escape exception msg — Python exceptions often contain
-        # "<class 'X'>" / "<method-wrapper ...>" that break TG HTML parser
         return f"⚠️ 選股失敗：{html.escape(str(e)[:100])}"
     if res["passed"] == 0:
         return "⚠️ 今日無通過篩選的股票"
@@ -402,6 +421,21 @@ def _section_picks(top_n: int = 5) -> str:
         "long", long_raw, industry_map=ind_map)
     rep_s = backtest_filter.apply_all_filters(
         "short", short_raw, industry_map=ind_map)
+
+    # ★ Tier1-2B：美股 overnight gap-down 風險 → 降 long 部位
+    # 8 筆 1 日內停損 0 勝、-7.52% 主因是美股大跌台股跳空 gap-down 打穿 MA10
+    us_risk = us_market.overnight_gap_risk()
+    _LAST_PICKS["us_risk"] = us_risk
+    if us_risk["level"] == "high":
+        # 高風險 → skip long entries 完全
+        rep_l.proceed = False
+        rep_l.skip_reason = (
+            f"Tier1-2B US 跳空風險高：{us_risk['reason']}"
+            f" → skip 今日做多"
+        )
+    elif us_risk["level"] == "medium":
+        # 中風險 → 減碼 50%
+        rep_l.capital_scale = (rep_l.capital_scale or 1.0) * 0.5
 
     # ★ 抓當前處置股 map — 用於推薦名單重疊警示
     try:
@@ -763,7 +797,7 @@ def _section_etf_changes(max_etfs: int = 5) -> str:
     return "\n".join(lines)
 
 
-def build_daily_report(top_n: int = 5,
+def build_daily_report(top_n: int = 4,
                         sections: list[str] | None = None) -> str:
     """組合完整報告.
 
