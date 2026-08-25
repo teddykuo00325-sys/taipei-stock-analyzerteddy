@@ -590,15 +590,16 @@ def _section_capital_allocation() -> str:
         r = backtest_filter.detect_regime()
     except Exception:
         return ""
-    # ★ 累積資金追蹤 — 從 performance.summary_kpis 拿累積淨報酬
-    base_capital = 1_000_000
-    cap_note = "起始 100 萬"
+    # ★ 累積資金追蹤 — 用 TRACK_RESET_DATE 起算的淨報酬（08-05 100 萬起算）
+    base_capital = realbacktest.TRACK_RESET_CAPITAL
+    cap_note = f"起始 {base_capital/10000:.0f} 萬（08-05 重置）"
     try:
-        kpi = performance.summary_kpis(initial_capital=1.0)
+        kpi = performance.summary_kpis(
+            initial_capital=1.0, since=realbacktest.TRACK_RESET_DATE)
         if kpi and kpi.get("n_holdings", 0) > 0:
             net_ret = kpi.get("total_return_net_pct", 0)
-            new_base = 1_000_000 * (1 + net_ret / 100)
-            cap_note = (f"跟系統累積至今 ≈ <b>{new_base/10000:.1f} 萬</b> "
+            new_base = realbacktest.TRACK_RESET_CAPITAL * (1 + net_ret / 100)
+            cap_note = (f"08-05 起累積 ≈ <b>{new_base/10000:.1f} 萬</b> "
                         f"(原 100 萬 → 淨 {net_ret:+.2f}%)")
             base_capital = new_base
     except Exception:
@@ -642,17 +643,19 @@ def _section_track_record() -> str:
     - Sharpe / Profit Factor 風險調整
     - 統計顯著性警示（N<30 標 ⚠️）
     """
+    # ★ TRACK_RESET_DATE 之後才算，之前的作歷史參考
+    RESET = realbacktest.TRACK_RESET_DATE
     rows = []
     for days, label in [(7, "過去 7 日"), (30, "過去 30 日"),
-                         (None, "累積全期")]:
+                         (None, "自 08-05 起累積")]:
         try:
-            tr = realbacktest.track_record(days=days, auto_only=True)
+            tr = realbacktest.track_record(days=days, auto_only=True,
+                                           since=RESET)
         except Exception:
             tr = None
         if not tr or tr["n_holdings"] == 0:
             rows.append(f"   {label}：<i>累積中</i>")
             continue
-        # 統計顯著性符號
         n = tr["n_holdings"]
         sig_mark = "⚠️" if n < 30 else "📊" if n < 100 else "✅"
         rows.append(
@@ -664,12 +667,12 @@ def _section_track_record() -> str:
     # ★ 累積期 alpha vs TWII + Sharpe / PF（只在有資料時顯示）
     extra_lines = []
     try:
-        kpi = performance.summary_kpis(initial_capital=1.0)
+        kpi = performance.summary_kpis(initial_capital=1.0, since=RESET)
         if kpi and kpi.get("n_holdings", 0) > 0:
             sys_net = kpi.get("total_return_net_pct", 0)
             # ★ B2 修：Alpha 對比改用「跟著系統 session 進出的 TWII 複利報酬」
             # 而非 buy-and-hold — 這樣才是 apple-to-apple 比較
-            twii_ret = performance.twii_matched_return()
+            twii_ret = performance.twii_matched_return(since=RESET)
             alpha_str = ""
             if twii_ret is not None:
                 alpha = sys_net - twii_ret
@@ -696,12 +699,14 @@ def _section_track_record() -> str:
 
     # 若三個全 "累積中" → 顯示首次啟動說明
     all_empty = all("累積中" in r for r in rows)
-    header = "📊 <b>系統 Track Record</b>（自動追蹤、無人為干預）"
+    header = ("📊 <b>系統 Track Record</b>"
+              "（自 2026-08-05 100 萬起重新起算）")
     if all_empty:
         return (f"\n{header}\n"
                 + "\n".join(rows)
-                + "\n   <i>📝 5 日後首批 session 結算，"
-                + "30 個交易日後數字才有統計意義</i>")
+                + "\n   <i>📝 Tier1 改善（弱多頭/US 跳空/min_score 85）上線起"
+                + "，之前累積 -96.6% 作歷史參考。5 日後首批新 session 結算，"
+                + "30 日後數字才有統計意義</i>")
     result = f"\n{header}\n" + "\n".join(rows)
     if extra_lines:
         result += "\n" + "\n".join(extra_lines)

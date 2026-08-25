@@ -27,6 +27,15 @@ DB_PATH = Path(__file__).parent.parent / "data" / "realbacktest.db"
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 _lock = Lock()
 
+# ============================================================
+# Track Record 重置基準（用戶 2026-08-05 決定重新起算）
+# ============================================================
+# 系統累積 -96% 之後（多為 07-04~08-04 熊市期間），用戶決定用「Tier1 改善
+# 上線後」為新的評估起點，從 100 萬重新起算。之前的 sessions 保留在 DB
+# 供歷史參考，但 KPI/資金配置只算 lock_date >= TRACK_RESET_DATE 的。
+TRACK_RESET_DATE = "2026-08-05"
+TRACK_RESET_CAPITAL = 1_000_000
+
 
 def _conn() -> sqlite3.Connection:
     c = sqlite3.connect(DB_PATH)
@@ -452,12 +461,15 @@ def auto_close_expired() -> list[tuple[int, int, float]]:
 
 
 def track_record(days: int | None = None,
-                  auto_only: bool = True) -> dict | None:
+                  auto_only: bool = True,
+                  since: str | None = None) -> dict | None:
     """彙整系統累積績效（僅 closed sessions）.
 
     Args:
         days: 取最近 N 日 lock_date 的 sessions；None = 全部
         auto_only: True 只算 TG 自動 lock 的（排除手動回測）
+        since: 只算 lock_date >= 此日期（'YYYY-MM-DD'）；配合 TRACK_RESET_DATE
+               達成「重置起算」效果
 
     回傳：
         {
@@ -478,6 +490,8 @@ def track_record(days: int | None = None,
     if days:
         cutoff = (date.today() - timedelta(days=days)).isoformat()
         sessions = [s for s in sessions if s.lock_date >= cutoff]
+    if since:
+        sessions = [s for s in sessions if s.lock_date >= since]
 
     win = lose = 0
     pcts: list[float] = []

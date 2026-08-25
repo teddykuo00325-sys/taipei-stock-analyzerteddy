@@ -39,8 +39,13 @@ def _regime_label_at(d: str) -> str:
         return "unknown"
 
 
-def holdings_df(auto_only: bool = True) -> pd.DataFrame:
+def holdings_df(auto_only: bool = True,
+                 since: str | None = None) -> pd.DataFrame:
     """全部 closed holdings → flat dataframe.
+
+    Args:
+        since: 只納入 lock_date >= 此日期 (YYYY-MM-DD) 的 sessions；
+               用於 TRACK_RESET_DATE 之後重新起算.
 
     每列一檔持股，欄位：
         session_id, lock_date, exit_date, side, regime,
@@ -55,6 +60,8 @@ def holdings_df(auto_only: bool = True) -> pd.DataFrame:
             s for s in sessions
             if s.note and realbacktest.AUTO_NOTE_PREFIX in s.note
         ]
+    if since:
+        sessions = [s for s in sessions if s.lock_date >= since]
     if not sessions:
         return pd.DataFrame(columns=[
             "session_id", "lock_date", "exit_date", "side", "regime",
@@ -117,9 +124,10 @@ def holdings_df(auto_only: bool = True) -> pd.DataFrame:
     return df
 
 
-def sessions_df(auto_only: bool = True) -> pd.DataFrame:
+def sessions_df(auto_only: bool = True,
+                 since: str | None = None) -> pd.DataFrame:
     """session 層級 aggregate：每筆 session 平均報酬 / 總 P&L (毛/淨) / 命中率."""
-    h = holdings_df(auto_only=auto_only)
+    h = holdings_df(auto_only=auto_only, since=since)
     if h.empty:
         return pd.DataFrame()
     g = h.groupby(["session_id", "lock_date", "exit_date", "side", "regime"])
@@ -145,13 +153,15 @@ def sessions_df(auto_only: bool = True) -> pd.DataFrame:
 # ============================================================
 def equity_curve(initial_capital: float = 1.0,
                   auto_only: bool = True,
-                  use_net: bool = True) -> pd.DataFrame:
+                  use_net: bool = True,
+                  since: str | None = None) -> pd.DataFrame:
     """系統累積資金曲線（依 session exit_date 排序，複利累積）.
 
     use_net=True 用淨報酬（扣交易成本，反映實戰）；False 用毛報酬.
+    since='YYYY-MM-DD' 只納入 lock_date >= 該日期的 sessions（Track Record 重置用）
     回傳 columns: date, equity, session_return_pct, equity_gross
     """
-    s = sessions_df(auto_only=auto_only)
+    s = sessions_df(auto_only=auto_only, since=since)
     if s.empty:
         return pd.DataFrame(columns=[
             "date", "equity", "equity_gross", "session_return_pct"])
@@ -190,14 +200,15 @@ def twii_benchmark(start: str, end: str,
         return pd.DataFrame()
 
 
-def twii_matched_return(auto_only: bool = True) -> float | None:
+def twii_matched_return(auto_only: bool = True,
+                          since: str | None = None) -> float | None:
     """計算「若把 TWII 當標的、跟著系統的每筆 session 進出」的複利報酬 %.
 
     修 B2：Alpha 對比 TWII 若用 buy-and-hold (first→last) 會不公平，
     因系統只在 session 內持倉，session 間可能有空窗。
     改用「TWII 在系統每筆 session 期間的複利報酬」為對照基準。
     """
-    s = sessions_df(auto_only=auto_only)
+    s = sessions_df(auto_only=auto_only, since=since)
     if s.empty:
         return None
     try:
@@ -301,7 +312,8 @@ TRADES_PER_YEAR_BASE = 50  # 5 日持有平均 ≈ 50 趟/年（用於年化）
 
 def risk_metrics(initial_capital: float = 1.0,
                   auto_only: bool = True,
-                  use_net: bool = True) -> dict:
+                  use_net: bool = True,
+                  since: str | None = None) -> dict:
     """計算風險調整指標.
 
     use_net=True 用淨報酬（扣交易成本，反映真實風險回報）
@@ -314,7 +326,7 @@ def risk_metrics(initial_capital: float = 1.0,
       avg_hold_days: 平均持有天數（用於年化）
       n_trades: 樣本數（< 30 統計上無意義）
     """
-    h = holdings_df(auto_only=auto_only)
+    h = holdings_df(auto_only=auto_only, since=since)
     if h.empty:
         return {
             "sharpe": 0.0, "sortino": 0.0,
@@ -372,9 +384,10 @@ def risk_metrics(initial_capital: float = 1.0,
 # 頂部 KPIs
 # ============================================================
 def summary_kpis(initial_capital: float = 1.0,
-                  auto_only: bool = True) -> dict:
+                  auto_only: bool = True,
+                  since: str | None = None) -> dict:
     """4 個關鍵指標：總報酬（毛/淨）/ 勝率 / 平均單檔報酬 / 最大回撤."""
-    h = holdings_df(auto_only=auto_only)
+    h = holdings_df(auto_only=auto_only, since=since)
     if h.empty:
         return {
             "n_sessions": 0,
@@ -393,7 +406,7 @@ def summary_kpis(initial_capital: float = 1.0,
             "last_date": None,
         }
     eq_net = equity_curve(initial_capital=initial_capital,
-                          auto_only=auto_only, use_net=True)
+                          auto_only=auto_only, use_net=True, since=since)
     dd_net = max_drawdown(eq_net["equity"], eq_net["date"])
     dd_gross = max_drawdown(eq_net["equity_gross"], eq_net["date"])
     total_return_net = (float(eq_net["equity"].iloc[-1])
@@ -403,7 +416,7 @@ def summary_kpis(initial_capital: float = 1.0,
     win_gross = int((h["return_pct"] > 0).sum())
     win_net = int((h["return_net_pct"] > 0).sum())
     risk = risk_metrics(initial_capital=initial_capital,
-                        auto_only=auto_only, use_net=True)
+                        auto_only=auto_only, use_net=True, since=since)
     return {
         "n_sessions": h["session_id"].nunique(),
         "n_holdings": len(h),
