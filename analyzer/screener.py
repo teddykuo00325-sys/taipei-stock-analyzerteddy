@@ -411,28 +411,51 @@ def screen(
         )
 
     # ===== 步驟 2：自快取讀取並評分（37% 進度）=====
-    _sc_bc(f"scoring loop start, n={total}")
-    results: list[dict] = []
-    for i, code in enumerate(codes):
-        if progress_cb and (i % 20 == 0):
-            progress_cb(0.62 + (i / max(total, 1)) * 0.37,
-                        f"分析 {i + 1} / {total}…")
-        # cloud breadcrumb 每 200 檔印一次定位卡哪
-        if _is_cloud_dbg and i > 0 and i % 200 == 0:
-            _sc_bc(f"scoring progress {i}/{total}, accepted={len(results)}")
+    # 平行化：8 個 worker，單檔卡住不影響其他，300 檔從 3 min → ~30s
+    # 每檔 60s hard-timeout（.result(timeout=60)）— 卡住直接 skip 不 hang loop
+    from concurrent.futures import (ThreadPoolExecutor, as_completed,
+                                      TimeoutError as _FUT_TO)
+
+    def _score_code(code: str) -> dict | None:
         df = _load_from_cache(code, period)
         if df is None:
-            continue
+            return None
         df_upper = df.rename(columns={
             "open": "Open", "high": "High", "low": "Low",
             "close": "Close", "volume": "Volume",
         })
-        row = _score_one(code, names.get(code, code),
-                         df_upper, min_avg_volume_lots,
-                         etf_signal=etf_sig_map.get(code))
-        if row:
-            results.append(row)
-    _sc_bc(f"scoring loop done, accepted={len(results)}")
+        return _score_one(code, names.get(code, code),
+                          df_upper, min_avg_volume_lots,
+                          etf_signal=etf_sig_map.get(code))
+
+    _sc_bc(f"scoring loop start, n={total}, workers=8")
+    results: list[dict] = []
+    n_timeout = 0
+    n_err = 0
+    completed_count = 0
+    with ThreadPoolExecutor(max_workers=8) as _ex:
+        futs = {_ex.submit(_score_code, c): c for c in codes}
+        for fut in as_completed(futs):
+            code = futs[fut]
+            completed_count += 1
+            try:
+                row = fut.result(timeout=60)
+                if row:
+                    results.append(row)
+            except _FUT_TO:
+                n_timeout += 1
+            except Exception:
+                n_err += 1
+            if progress_cb and (completed_count % 20 == 0):
+                progress_cb(0.62 + (completed_count / max(total, 1)) * 0.37,
+                            f"分析 {completed_count} / {total}…")
+            # 每 100 檔 breadcrumb（雲端用）
+            if _is_cloud_dbg and completed_count % 100 == 0:
+                _sc_bc(f"scoring progress {completed_count}/{total}, "
+                       f"accepted={len(results)}, timeout={n_timeout}, "
+                       f"err={n_err}")
+    _sc_bc(f"scoring loop done, accepted={len(results)}, "
+           f"timeout={n_timeout}, err={n_err}")
 
     if progress_cb:
         progress_cb(1.0, f"分析完成，{len(results)} 檔通過均量篩選")

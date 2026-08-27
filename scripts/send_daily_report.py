@@ -267,6 +267,14 @@ def main() -> int:
             top_n=5, auto_fetch_etf=True, prebuilt_text=text)
         if ok:
             print(f"✅ {msg}")
+            # ★ 寫成功 marker — workflow retry step 讀此檔判斷是否要 retry
+            # 避免「主 send 已成功但後續步驟失敗 → step 2 retry 造成雙推」
+            try:
+                marker = Path("/tmp/tg_sent_ok")
+                marker.write_text(
+                    datetime.now(TPE_TZ).strftime("%Y-%m-%d %H:%M:%S"))
+            except Exception:
+                pass
             return 0
         print(f"❌ {msg}", file=sys.stderr)
         return 1

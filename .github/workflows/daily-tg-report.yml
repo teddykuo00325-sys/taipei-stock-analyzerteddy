@@ -43,6 +43,9 @@ jobs:
           pip install -r requirements.txt
 
       - name: Run daily report sender
+        # ★ step-level 20 分鐘 hard timeout（原 job-level 60 分太寬）
+        # send 正常 3-5 分鐘完成；卡住時 20 分自動 fail 進入 retry
+        timeout-minutes: 20
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -52,6 +55,27 @@ jobs:
           FORCE_SEND: ${{ github.event.inputs.force == 'true' && '1' || '' }}
           PYTHONIOENCODING: utf-8
         run: |
+          python scripts/send_daily_report.py
+
+      # ★ 若 step 1 (send) 因 timeout 或例外失敗 → retry 一次
+      # 讀 /tmp/tg_sent_ok marker：若第一次已成功送到 TG，跳過 retry 避免雙推
+      - name: Retry send on failure (last-resort)
+        if: failure()
+        timeout-minutes: 20
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_CHAT_ID_PRIVATE: ${{ secrets.TELEGRAM_CHAT_ID_PRIVATE }}
+          FORCE_SEND: '1'   # retry 一定要 force（同 run 內 dedup 不會擋）
+          PYTHONIOENCODING: utf-8
+        run: |
+          if [ -f /tmp/tg_sent_ok ]; then
+            echo "✅ 第一次已成功送出 TG (marker=$(cat /tmp/tg_sent_ok))，"
+            echo "   step 1 只是後續步驟失敗，不需 retry — 跳過避免雙推"
+            exit 0
+          fi
+          echo "⚠️ 第一次 send 失敗（無 marker），30 秒後 retry..."
+          sleep 30
           python scripts/send_daily_report.py
 
       # ★ TG 推送後，把 realbacktest.db 變動 commit 回 repo
