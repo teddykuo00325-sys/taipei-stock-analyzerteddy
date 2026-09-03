@@ -11,7 +11,7 @@
 對外 API：
   detect_regime()                 — 偵測大盤 regime
   filter_picks(picks, side, ...)  — Lv2/3/5 過濾候選股
-  recommended_hold_days(regime)   — Lv4 動態持有期
+  recommended_hold_days(regime)   — Lv4 持有上限（安全網，非出場日）
   check_technical_stop(...)       — Lv4 技術停損檢查
   apply_all_filters(...)          — 一站式呼叫所有過濾
 """
@@ -167,26 +167,49 @@ def detect_regime(as_of_date: str | None = None) -> MarketRegime:
 # Lv4：動態持有期 + 技術停損
 # ============================================================
 def recommended_hold_days(regime: MarketRegime,
-                           default: int = 5) -> tuple[int, str]:
-    """根據 regime 推薦持有天數.
+                           default: int = 20) -> tuple[int, str]:
+    """根據 regime 推薦「最長持有上限」（交易日）.
 
-    強趨勢 → 10 日（讓贏家跑）
-    整理 → 3 日（快進快出）
+    ★ 2026-09-03 語意變更：原本回傳「預定出場日」（3/7/10 日），
+      現在只是防呆安全網 — 出場主控權交給 check_technical_stop 的
+      MA 移動停利。
+
+    改動依據（08-05~09-03 實測 N=35）：
+      獲利單 13 筆有 8 筆（62%）撞到日曆天花板，前 4 大贏家有 3 筆
+      是在最後一天被強制平倉（+13.1%/6d、+9.3%/6d、+8.3%/6d），
+      壓低均賺至 +5.10%，而打平需要 +6.37%。
+      虧損單則由 MA10 提前砍（中位 4 日）→「停損看趨勢、停利看日曆」
+      的錯置，是盈虧比只有 1.354（需 1.692）的主因。
     """
     abs_gap = abs(regime.ma_gap_pct)
     if abs_gap >= 5:
-        return 10, f"強趨勢市（MA20-MA60 差 {regime.ma_gap_pct:+.1f}%）"
+        return 30, (f"強趨勢市（MA20-MA60 差 {regime.ma_gap_pct:+.1f}%）"
+                    f"→ 持有上限 30 日")
     if abs_gap >= 3:
-        return 7, f"中度趨勢市（差 {regime.ma_gap_pct:+.1f}%）"
-    return 3, f"整理市，建議快進快出"
+        return 20, (f"中度趨勢市（差 {regime.ma_gap_pct:+.1f}%）"
+                    f"→ 持有上限 20 日")
+    return 10, "整理市 → 持有上限 10 日（出場仍以 MA 移動停利為主）"
+
+
+# 移動停利門檻：未實現獲利達此 % 後，出場基準由 MA10 收緊到 MA5。
+# 目的是讓「還在趨勢中」的贏家繼續跑（MA10 較寬、容忍拉回），
+# 但一旦利潤變厚就改用較緊的 MA5 鎖住，避免大幅回吐。
+TRAIL_TIGHTEN_PCT = 10.0
 
 
 def check_technical_stop(df: pd.DataFrame, side: str,
-                          entry_price: float) -> tuple[bool, str]:
-    """檢查當前 K 線是否觸發技術停損.
+                          entry_price: float,
+                          trail: bool = True) -> tuple[bool, str]:
+    """檢查當前 K 線是否觸發技術停損 / 移動停利.
 
-    df: 該股最新 K 線 + indicators（含 ma10）
+    df: 該股最新 K 線 + indicators（含 ma5 / ma10）
     side: 'long' or 'short'
+    trail: True 時啟用獲利分層收緊（>= TRAIL_TIGHTEN_PCT 改用 MA5）
+
+    出場基準（多空對稱）：
+      未實現獲利 <  10%  → 跌破/突破 MA10 出場
+      未實現獲利 >= 10%  → 改用 MA5（移動停利，鎖住趨勢末端利潤）
+
     回傳 (是否觸發, 原因)
     """
     if df is None or df.empty:
@@ -198,15 +221,28 @@ def check_technical_stop(df: pd.DataFrame, side: str,
     ma10 = float(last["ma10"]) if not pd.isna(last["ma10"]) else None
     if ma10 is None:
         return False, ""
-    # 多單跌破 MA10 + 收紅 → 停損
-    if side == "long" and close < ma10:
-        loss_pct = (close / entry_price - 1) * 100
-        return True, (f"多單跌破 MA10 ({ma10:.2f})，"
-                      f"當日 {close:.2f}，相對進場 {loss_pct:+.2f}%")
-    # 空單突破 MA10 → 回補
-    if side == "short" and close > ma10:
-        gain_pct = (entry_price / close - 1) * 100
-        return True, (f"空單突破 MA10 ({ma10:.2f})，"
+    ma5 = None
+    if "ma5" in df.columns and not pd.isna(last["ma5"]):
+        ma5 = float(last["ma5"])
+
+    # 未實現獲利（多空對稱；entry_price 異常時退回 0 → 一律用 MA10）
+    if entry_price and entry_price > 0 and close > 0:
+        gain_pct = ((close / entry_price - 1) * 100 if side == "long"
+                    else (entry_price / close - 1) * 100)
+    else:
+        gain_pct = 0.0
+
+    ref_name, ref = "MA10", ma10
+    if trail and gain_pct >= TRAIL_TIGHTEN_PCT and ma5 is not None:
+        ref_name, ref = "MA5", ma5
+
+    # 多單跌破基準均線 → 出場
+    if side == "long" and close < ref:
+        return True, (f"多單跌破 {ref_name} ({ref:.2f})，"
+                      f"當日 {close:.2f}，相對進場 {gain_pct:+.2f}%")
+    # 空單突破基準均線 → 回補
+    if side == "short" and close > ref:
+        return True, (f"空單突破 {ref_name} ({ref:.2f})，"
                       f"當日 {close:.2f}，相對進場 {gain_pct:+.2f}%")
     return False, ""
 

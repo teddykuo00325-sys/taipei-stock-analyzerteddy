@@ -307,7 +307,33 @@ def check_stop_loss_open_sessions(force_update: bool = False) -> dict:
                         (h.code, h.name, sess.side, reason, cur_price))
             except Exception:
                 continue
+        # ★ 2026-09-03：出場改以 MA 移動停利為主後，session 不再靠
+        # target_exit_date 到期關閉。若所有持股都已停損出場，必須即時把
+        # session 標記 closed —— track_record() 只算 closed sessions，
+        # 少這一刀 Track Record 會漏帳（P&L 卡在 open 裡不進 KPI）。
+        _close_if_fully_exited(sess.id)
     return triggered
+
+
+def _close_if_fully_exited(session_id: int) -> bool:
+    """所有持股都已出場 → 把 session 標記 closed；回傳是否有變更.
+
+    注意：呼叫端不可持有 _lock（Lock() 非可重入）。
+    """
+    with _lock, _conn() as c:
+        row = c.execute(
+            "SELECT COUNT(*) FROM realbt_holding "
+            "WHERE session_id=? AND exit_price IS NULL",
+            (session_id,),
+        ).fetchone()
+        if row is None or row[0] != 0:
+            return False
+        cur = c.execute(
+            "UPDATE realbt_session SET status='closed' "
+            "WHERE id=? AND status='open'",
+            (session_id,),
+        )
+        return cur.rowcount > 0
 
 
 def lock_session_historical(side: Literal["long", "short"],
@@ -432,13 +458,20 @@ def lock_session_auto(side: Literal["long", "short"],
 
 
 def auto_close_expired() -> list[tuple[int, int, float]]:
-    """結算所有 target_exit_date <= today 的 open sessions.
+    """結算所有已達持有上限（target_exit_date < today）的 open sessions.
+
+    ★ 2026-09-03：target_exit_date 語意改為「最長持有上限」的安全網，
+      正常出場應由 check_stop_loss_open_sessions 的 MA 移動停利負責。
+      這裡只負責清掉「趨勢一直沒轉、掛到上限」的殭屍部位。
 
     回傳 [(session_id, n_closed, total_pnl_gross), ...]
     """
     today = date.today()
     closed = []
     for sess in list_sessions(status="open"):
+        # 持股已全部出場（MA 停損砍完）→ 直接標記 closed，不必等上限
+        if _close_if_fully_exited(sess.id):
+            continue
         if not sess.target_exit_date:
             continue
         try:

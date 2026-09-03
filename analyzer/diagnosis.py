@@ -21,6 +21,9 @@ class Diagnosis:
     ma_state: str
     ma_note: str
     volume_note: str
+    # 未截斷的原始分數（可超出 ±100）。score 仍為截斷值，供 stance /
+    # action / min_score 門檻使用；raw_score 專供排序解飽和用。
+    raw_score: int = 0
     trend_note: str = ""
     weekly_note: str = ""
     candles: list = field(default_factory=list)
@@ -304,6 +307,12 @@ def diagnose(df: pd.DataFrame,
     score += int(round(fib_s * weights.get("fib_scale", 1.0)))
     score += int(round(gv_s * weights.get("granville_scale", 1.0)))
 
+    # ★ 2026-09-03 (C)：保留未截斷值供排序用。
+    # 實測 08-05~09-03：|score|=100 觸頂者佔 51%（18/35），主分數在頂端
+    # 完全失去排序能力，只能靠 Tiebreak（0-8 共 9 級）決勝；且觸頂那群
+    # 期望值 -1.07% / P&L -17,431，而 85-94 那群 +0.64% / +23,609。
+    # 截斷後的 score 維持 ±100 → stance / action / min_score 語意不變。
+    raw_score = int(score)
     score = max(-100, min(100, score))
 
     stance = _stance(score)
@@ -462,7 +471,7 @@ def diagnose(df: pd.DataFrame,
 
     return Diagnosis(
         school=mod.FULL_NAME,
-        score=score, stance=stance, action=action, action_note=action_note,
+        score=score, raw_score=raw_score, stance=stance, action=action, action_note=action_note,
         summary=summary, ma_state=ma_state, ma_note=ma_note,
         volume_note=vol_note, trend_note=trend_note, weekly_note=weekly_note,
         candles=candles, chart_patterns=pats, signals=sigs,

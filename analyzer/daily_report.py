@@ -621,7 +621,7 @@ def _section_capital_allocation() -> str:
             f"   {emoji} {zh}：<b>{scale*100:.0f}%</b> = "
             f"<b>{side_capital/10000:.0f} 萬</b> ｜ "
             f"{n_picks} 檔 → 每檔 <b>{per_stock/10000:.1f} 萬</b> ｜ "
-            f"持有 {hd} 日"
+            f"持有上限 {hd} 日（出場以 MA 移動停利為主）"
         )
     # 依 regime 給資金配置提示
     regime_hints = {
@@ -914,7 +914,7 @@ def _auto_lock_today_picks(top_n: int) -> list[str]:
                 side, picks,
                 capital=base_capital * scale,
                 hold_days=hold_days,
-                note=f"08:30 daily (n={len(picks)}, hold={hold_days}d)",
+                note=f"08:30 daily (n={len(picks)}, maxhold={hold_days}d)",
             )
             if sid is None:
                 msgs.append(f"{side}: skip (今日已 lock)")

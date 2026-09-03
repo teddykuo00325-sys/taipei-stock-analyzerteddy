@@ -120,6 +120,40 @@ bear:      allow_long=False, allow_short=True,  capital=1.0  (gap<=-3 且 close<
 - 每檔 `fut.result(timeout=60)` hard timeout
 - 300 檔從 3 分 → ~30 秒
 
+### 2026-09-03 起：**出場邏輯改造（A）+ score 解飽和（C）**
+
+依 08-05~09-03 重置後 N=35 檢討（毛勝率 37.1%、毛期望 -0.47%/筆、**含成本淨 -7.63%**）。
+關鍵診斷：**勝率不是主症狀** —— 37% 對「突破 + 技術停損」是正常值，病在盈虧比與成本。
+
+| 診斷 | 數據 |
+|-----|-----|
+| 盈虧比 R | 1.354（毛）/ 1.163（淨）｜打平需 1.692 / 1.916 |
+| 損益兩平勝率 | 42.5%（毛）/ **46.2%（淨）** vs 實際 34.3% → 缺口 -11.9 pp |
+| 交易成本 | **0.62%/筆**，總計 -62,095 = 毛虧損的 **4.4 倍**；年化拖累 ≈ 31% |
+| 獲利單撞天花板 | 13 筆中 8 筆（62%）；前 4 大贏家 3 筆是被行事曆殺掉的 |
+| score 觸頂 | \|score\|=100 佔 **51%**，期望 -1.07%；85-94 那群 +0.64% |
+
+**A. 出場：MA 移動停利為主，日曆降為安全網**
+- `backtest_filter.recommended_hold_days` 語意改為「**最長持有上限**」：3/7/10 → **10/20/30** 交易日
+- `backtest_filter.check_technical_stop` 加**獲利分層收緊**（新增 `TRAIL_TIGHTEN_PCT = 10.0`）
+  ```
+  未實現獲利 <  10% → 跌破/突破 MA10 出場（寬，容忍拉回，讓贏家跑）
+  未實現獲利 >= 10% → 改用 MA5（緊，鎖住趨勢末端利潤）
+  ```
+- `realbacktest._close_if_fully_exited()` 新增：持股全出場即標記 session `closed`
+  → **必要**，因 `track_record()` 只算 closed sessions，否則 P&L 卡在 open 不進 KPI
+- `auto_close_expired()` 降為「清殭屍部位」，並在迴圈開頭先呼叫 `_close_if_fully_exited`
+
+**C. score 解飽和（僅影響排序，門檻語意不變）**
+- `diagnosis.Diagnosis` 新增 `raw_score`（未截斷，可超 ±100）；`score` 仍截斷在 ±100
+- `screener` records 加 `原始分數` 欄；4 處排序改 `by=["原始分數","Tiebreak"]`
+- **`min_score_long/short` 門檻仍用截斷後的 `分數`** → 85 還是 85，不必重新校準
+
+⚠️ **尚未處理**（檢討時列出但當時決定不動）：
+- 交易成本未進入任何決策（**最大單一問題**，A 只間接降低換手）
+- 做空淨虧損（long +0.24% vs short -0.55% 單位資金報酬，N=13 太小）
+- 集中度：`per_stock = capital / top_n`，當日僅 1 檔時 all-in 100%
+
 ### GH Actions Workflow 可靠性
 - `daily-tg-report.yml`: send step **20 min timeout** + retry step（with `/tmp/tg_sent_ok` marker 防雙推）
 - 兩支 workflow 都有 dedup（`_check_gh_runs_today` 用 run_number tiebreaker 避免並行 dispatch 死鎖）
@@ -190,3 +224,6 @@ python -c "from analyzer import realbacktest; print(realbacktest.track_record(si
 ## 變更紀錄
 
 - 2026-09-02 建立此檔（Claude 帳號轉換用）
+- 2026-09-03 專案轉到 Claude Desktop（Code tab）；`.venv` 為空殼已重建（49 套件，
+  pandas 3.0.5 / numpy 2.4.6 / streamlit 1.63.0 / yfinance 1.7.0 — 均為大版本跳躍，
+  analyzer 全模組 import 通過）。新增第 6 節「2026-09-03 出場邏輯改造 + score 解飽和」。

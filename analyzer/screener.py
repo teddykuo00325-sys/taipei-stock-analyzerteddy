@@ -62,6 +62,7 @@ def _score_one(code: str, name: str, df: pd.DataFrame,
             "收盤": round(float(last["close"]), 2),
             "漲跌%": round((last["close"] / prev["close"] - 1) * 100, 2),
             "分數": d.score,
+            "原始分數": getattr(d, "raw_score", None) or d.score,
             "評估": d.stance,
             "建議": d.action,
             "均線": d.ma_state,
@@ -170,6 +171,7 @@ def _score_one_at_date(code: str, name: str, df_full: pd.DataFrame,
             "漲跌%": round((last["close"] / prev["close"] - 1) * 100, 2)
                        if prev["close"] else 0,
             "分數": d.score,
+            "原始分數": getattr(d, "raw_score", None) or d.score,
             "評估": d.stance,
             "建議": d.action,
             "均線": d.ma_state,
@@ -307,11 +309,14 @@ def screen_historical(
     # 歷史回測也用 Tiebreak 排序（同分用 3 天勝率代理指標）
     if "Tiebreak" not in full_df.columns:
         full_df["Tiebreak"] = 0
+    # ★ 2026-09-03 (C)：主排序改用未截斷的「原始分數」解飽和
+    if "原始分數" not in full_df.columns:
+        full_df["原始分數"] = full_df["分數"]
     long_top = full_df.sort_values(
-        by=["分數", "Tiebreak"], ascending=[False, False]
+        by=["原始分數", "Tiebreak"], ascending=[False, False]
     ).head(top_n).reset_index(drop=True)
     short_top = full_df.sort_values(
-        by=["分數", "Tiebreak"], ascending=[True, True]
+        by=["原始分數", "Tiebreak"], ascending=[True, True]
     ).head(top_n).reset_index(drop=True)
     return {
         "long": long_top, "short": short_top, "full": full_df,
@@ -506,11 +511,17 @@ def screen(
         long_df = full_df[full_df["分數"] >= min_score_long]
     if min_score_short is not None:
         short_df = full_df[full_df["分數"] <= min_score_short]
+    # ★ 2026-09-03 (C)：min_score 門檻仍用截斷後的「分數」（語意不變），
+    # 但排序改用未截斷的「原始分數」→ 恢復頂端排序能力
+    if "原始分數" not in full_df.columns:
+        full_df["原始分數"] = full_df["分數"]
+        long_df = long_df.assign(原始分數=long_df["分數"])
+        short_df = short_df.assign(原始分數=short_df["分數"])
     long_top = long_df.sort_values(
-        by=["分數", "Tiebreak"], ascending=[False, False]
+        by=["原始分數", "Tiebreak"], ascending=[False, False]
     ).head(top_n).reset_index(drop=True)
     short_top = short_df.sort_values(
-        by=["分數", "Tiebreak"], ascending=[True, True]
+        by=["原始分數", "Tiebreak"], ascending=[True, True]
     ).head(top_n).reset_index(drop=True)
     return {
         "long": long_top, "short": short_top, "full": full_df,
