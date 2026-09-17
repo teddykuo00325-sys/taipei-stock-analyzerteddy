@@ -2827,7 +2827,7 @@ elif mode == "📊 系統績效":
 不能 cherry-pick 或重跑。要看真實有效性，**等 30 個交易日**累積。
 
 **指標含意**：
-- **累積資金倍數**：複利後資金倍率（起點 1.0）
+- **累積資金倍數**：組合淨值倍率（起點 1.0）— 固定 100 萬基準 + 逐日已實現損益，非逐筆複利
 - **vs 加權指數**：同期 ^TWII 漲跌幅，比較系統 alpha
 - **勝率**：return_pct > 0 的比例
 - **最大回撤**：資金曲線從高點下跌的最大幅度
@@ -2972,7 +2972,7 @@ elif mode == "📊 系統績效":
                 fig.add_hline(y=1.0, line_dash="dot", line_color="#aaa",
                               annotation_text="起始 1.0")
                 fig.update_layout(
-                    title=f"累積資金倍數（複利）{suffix}",
+                    title=f"累積資金倍數（組合淨值）{suffix}",
                     xaxis_title="日期", yaxis_title="倍數",
                     hovermode="x unified", height=480,
                 )

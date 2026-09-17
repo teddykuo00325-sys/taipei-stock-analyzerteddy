@@ -242,6 +242,17 @@ def main() -> int:
         print(f"❌ import failed: {e}", file=sys.stderr)
         return 1
 
+    # TG 推送前健檢（同 daily）— 唯讀，不發訊息
+    try:
+        _ok, _logs = telegram_notify.preflight()
+        for _l in _logs:
+            print(f"[preflight] {_l}")
+        if not _ok:
+            print("❌ TG 健檢未過 — 中止", file=sys.stderr)
+            return 1
+    except Exception as e:
+        print(f"[preflight] 健檢本身例外，不阻擋：{e}")
+
     # 先查是否有 open session
     open_sessions = realbacktest.list_sessions(status="open")
     if not open_sessions:

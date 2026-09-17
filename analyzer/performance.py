@@ -5,7 +5,7 @@
 對外 API：
     holdings_df()         — 全部 closed holdings flat dataframe（含 side, regime）
     sessions_df()         — session 層級 aggregate
-    equity_curve()        — 系統累積資金曲線（按 session 結算日序列）
+    equity_curve()        — 系統資金曲線（固定基準 + 逐日已實現損益）
     twii_benchmark()      — 同期 TWII 漲跌幅，normalize 到起始 1.0
     win_rate_by()         — 依 side / regime 分群勝率
     max_drawdown()        — 最大回撤金額 / %
@@ -155,25 +155,52 @@ def equity_curve(initial_capital: float = 1.0,
                   auto_only: bool = True,
                   use_net: bool = True,
                   since: str | None = None) -> pd.DataFrame:
-    """系統累積資金曲線（依 session exit_date 排序，複利累積）.
+    """系統資金曲線 — 固定資金基準 + 逐日累積已實現損益.
 
-    use_net=True 用淨報酬（扣交易成本，反映實戰）；False 用毛報酬.
-    since='YYYY-MM-DD' 只納入 lock_date >= 該日期的 sessions（Track Record 重置用）
-    回傳 columns: date, equity, session_return_pct, equity_gross
+    ★ 2026-09-17 方法論修正
+    ------------------------------------------------------------------
+    舊做法：取 sessions_df 的 session 報酬率逐筆 `cumprod()` 複利。
+    這等同假設「全額押第 1 個 session → 結清 → 全額押第 2 個 → …」，
+    但實際上 session 是**並行**的（08-05~09-17 期間平均 4.8 個同時在場、
+    最高 10 個），每個只用一部分資金。依序複利會把虧損放大約 2 倍：
+        逐筆複利  -66.63%
+        實際加總  -32.11%   （淨 P&L -321,059 / 基準 100 萬）
+
+    受影響的不只是這個百分比 —— `summary_kpis()` 的 total_return_* 與
+    max_dd_*，以及 daily_report 用 total_return_net_pct 推算的「當前
+    基準資金」（資金配置建議的分母）全都連動偏誤。
+
+    新做法：把帳戶視為固定 TRACK_RESET_CAPITAL 的現金帳戶，每筆持股
+    出場時把該筆淨損益記入，得到真正的組合淨值曲線。
+
+    注意：Sharpe / Sortino / Profit Factor 走的是 `risk_metrics()`，
+    以**逐筆持股報酬**計算，不經過本函式，故不受此次修正影響。
+
+    use_net=True 用淨損益（扣手續費/稅/借券費）；False 用毛損益。
+    since='YYYY-MM-DD' 只納入 lock_date >= 該日期的 sessions。
+    回傳 columns: date, equity, equity_gross, session_return_pct
+        （session_return_pct 現為「當日組合報酬 %」）
     """
-    s = sessions_df(auto_only=auto_only, since=since)
-    if s.empty:
+    h = holdings_df(auto_only=auto_only, since=since)
+    if h.empty:
         return pd.DataFrame(columns=[
             "date", "equity", "equity_gross", "session_return_pct"])
-    # 複利累積：淨 vs 毛
-    s["factor_net"] = 1 + s["session_return_net_pct"] / 100
-    s["factor_gross"] = 1 + s["session_return_pct"] / 100
-    s["equity"] = initial_capital * (
-        s["factor_net"] if use_net else s["factor_gross"]).cumprod()
-    s["equity_gross"] = initial_capital * s["factor_gross"].cumprod()
-    out_col = "session_return_net_pct" if use_net else "session_return_pct"
-    return s[["exit_date", "equity", "equity_gross", out_col]].rename(
-        columns={"exit_date": "date", out_col: "session_return_pct"})
+
+    base = float(realbacktest.TRACK_RESET_CAPITAL)
+    d = (h.groupby("exit_date")[["pnl", "pnl_net"]]
+         .sum().sort_index().cumsum().reset_index())
+
+    d["equity_gross"] = initial_capital * (1 + d["pnl"] / base)
+    d["equity_net"] = initial_capital * (1 + d["pnl_net"] / base)
+    d["equity"] = d["equity_net"] if use_net else d["equity_gross"]
+
+    # 當日組合報酬 %（相對前一日淨值）
+    d["session_return_pct"] = d["equity"].pct_change().fillna(
+        d["equity"] / initial_capital - 1) * 100
+
+    out = d[["exit_date", "equity", "equity_gross",
+             "session_return_pct"]].rename(columns={"exit_date": "date"})
+    return out.reset_index(drop=True)
 
 
 def twii_benchmark(start: str, end: str,

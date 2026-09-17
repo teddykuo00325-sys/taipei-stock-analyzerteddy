@@ -180,6 +180,38 @@ bear:      allow_long=False, allow_short=True,  capital=1.0  (gap<=-3 且 close<
   但要容納最多 38 分鐘等待）
 - retry step 維持 20（觸發時已過 09:08，不需再等）
 
+### 2026-09-17：**TG 推送前健檢 + 資金曲線方法論修正**
+
+**丁. `telegram_notify.preflight()`** — 唯讀，不發訊息。兩支 script 的
+main() 在跑 screener（數分鐘）之前先呼叫，失敗即中止，避免白跑。
+驗兩關（缺一不可 —— 09-17 的兩種失敗態各中一關）：
+1. `getMe` → token 是否有效（401 = 已被 Telegram 撤銷）
+2. `getChatAdministrators` → bot 是否為頻道管理員且 `can_post_messages`
+   （token 有效但非管理員時，要到送出才會 403）
+
+網路暫時性錯誤**不阻擋**（回 True + 警告），只有確定的憑證/權限問題才中止。
+
+**乙. `performance.equity_curve()` 改日頻組合淨值**
+
+舊做法用 session 報酬率逐筆 `cumprod()`，等同假設「全額押第 1 個 session
+→ 結清 → 全額押第 2 個 → …」。但 session 是**並行**的（08-05~09-17 期間
+平均 4.8 個同時在場、最高 10 個），依序複利把虧損放大約 2 倍：
+
+| | 累積淨報酬 | 資金配置基準 |
+|---|---:|---:|
+| 舊（逐筆複利）| **-66.63%** | 33.4 萬 |
+| 新（固定基準 + 逐日已實現損益）| **-28.22%** | **71.8 萬** |
+
+新算法：把帳戶視為固定 `TRACK_RESET_CAPITAL` 的現金帳戶，每筆持股出場時
+把該筆淨損益記入 → 真正的組合淨值曲線。
+
+連動修正：`summary_kpis()` 的 `total_return_*` / `max_dd_*`，以及
+`daily_report._section_capital_allocation()` 用 `total_return_net_pct`
+推算的「當前基準資金」—— 那是每日建議部位大小的分母，先前被系統性低估。
+
+⚠️ **Sharpe / Sortino / Profit Factor 不受此修正影響** —— 那些走
+`risk_metrics()`，以逐筆持股報酬計算，不經過 `equity_curve()`。
+
 ### GH Actions Workflow 可靠性
 - `daily-tg-report.yml`: send step **50 min timeout**（2026-09-17 由 20 放寬，容納等到 09:08 鎖單）+ retry step 20 min（with `/tmp/tg_sent_ok` marker 防雙推）
 - 兩支 workflow 都有 dedup（`_check_gh_runs_today` 用 run_number tiebreaker 避免並行 dispatch 死鎖）
@@ -206,6 +238,7 @@ bear:      allow_long=False, allow_short=True,  capital=1.0  (gap<=-3 且 close<
 | 08-27 | Scoring loop sequential，單檔卡住 hang 全部 | 8-worker 平行 + 60s per-task timeout |
 | 09-17 | bot token 明文寫進 public repo 的 `SETUP.md:109` → Telegram 撤銷 token，08:30 推送全失敗 | 清除明文改 placeholder；換發新 bot 並重設頻道管理員權限 |
 | 09-17 | 08:30 鎖單抓到盤前試撮價（漲跌停），15/38 筆進出場價落在當日 OHLC 區間外 | 鎖單延到 09:08 + `live_price_trustworthy()` 守門 |
+| 09-17 | `equity_curve()` 對並行 session 逐筆複利 → 累積虧損誇大 2 倍（-28.22% 報成 -66.63%），連帶資金配置基準由 71.8 萬縮成 33.4 萬 | 改固定基準 + 逐日已實現損益 |
 
 ---
 
@@ -252,6 +285,8 @@ python -c "from analyzer import realbacktest; print(realbacktest.track_record(si
 ## 變更紀錄
 
 - 2026-09-02 建立此檔（Claude 帳號轉換用）
+- 2026-09-17 新增 TG 推送前健檢（`telegram_notify.preflight()`）；修正
+  `equity_curve()` 對並行 session 逐筆複利的方法論錯誤。
 - 2026-09-17 TG 推送中斷事故：bot token 因寫在 public repo 的 SETUP.md 被 Telegram
   撤銷。已清除明文、換發新 bot（id 8638236811 @TeddyKuo_TEST_bot，舊 bot 帳號已刪除）、
   重設頻道管理員權限。同日修正盤前試撮價 bug（鎖單延到 09:08）。

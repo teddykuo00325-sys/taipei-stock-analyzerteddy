@@ -205,6 +205,19 @@ def main() -> int:
         print("❌ TELEGRAM_CHAT_ID 未設定", file=sys.stderr)
         return 1
 
+    # 0.2) TG 推送前健檢 — 在跑 screener（數分鐘）之前先確認推得出去。
+    # 09-17 事故：token 被撤銷，白跑完整流程才在最後一步失敗。
+    try:
+        from analyzer import telegram_notify as _tg
+        _ok, _logs = _tg.preflight()
+        for _l in _logs:
+            print(f"[preflight] {_l}")
+        if not _ok:
+            print("❌ TG 健檢未過 — 中止（避免白跑 screener）", file=sys.stderr)
+            return 1
+    except Exception as e:
+        print(f"[preflight] 健檢本身例外，不阻擋：{e}")
+
     # 0.5) 週末跳過推送 — 市場休市，報告內容跟週五一樣（除非 FORCE_SEND）
     today_tpe = datetime.now(TPE_TZ)
     weekday = today_tpe.weekday()  # Monday=0, Sunday=6

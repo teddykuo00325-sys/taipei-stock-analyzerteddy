@@ -249,3 +249,95 @@ def send_long(text: str, chunk_size: int = 3800,
     if n_ok == len(chunks):
         return True, f"已分段發送 {n_ok}/{len(chunks)} 段"
     return False, f"發送失敗（第 {n_ok+1} 段）：{last_err}"
+
+
+# ============================================================
+# 推送前健檢（2026-09-17）
+# ============================================================
+# 事故背景：09-17 的 08:30 推送整批失敗，因 bot token 被 Telegram 撤銷
+# （明文洩漏在 public repo）。當時 workflow 只看到「send step failure」，
+# 看不出根因，是事後靠人工比對才定位。
+#
+# 換發新 bot 後又發現第二種失敗態：token 有效（getMe 200）但該 bot
+# 不是頻道管理員 → 送出時才 403。所以健檢必須驗兩關，缺一不可。
+#
+# 全程唯讀，不發送任何訊息。
+def preflight() -> tuple[bool, list[str]]:
+    """推送前驗證 token 與頻道發布權；回傳 (是否可推送, 訊息列表).
+
+    只有在**確定是憑證/權限問題**時回 False（401 / 403 / 非管理員）。
+    網路暫時性錯誤回 True 並附警告 — 不因一次連線失敗就放棄整份報告。
+    """
+    logs: list[str] = []
+    c = _cfg()
+    if not c:
+        return False, ["未設定 Telegram credentials"]
+
+    url = f"https://api.telegram.org/bot{c['token']}"
+
+    # --- 關卡 1：token 是否有效 ---
+    try:
+        r = requests.post(url + "/getMe", timeout=15)
+        js = r.json()
+    except Exception as e:
+        logs.append(f"getMe 連線失敗（不阻擋）：{e}")
+        return True, logs
+    if not js.get("ok"):
+        code = js.get("error_code")
+        desc = js.get("description", "")
+        logs.append(f"getMe 失敗 [{code}] {desc}")
+        if code in (401, 403):
+            logs.append("→ bot token 無效或已被撤銷，請至 @BotFather 重新取得")
+            return False, logs
+        return True, logs
+    me = js["result"]
+    bot_id = me["id"]
+    logs.append(f"token OK — @{me.get('username')} (id={bot_id})")
+
+    # --- 關卡 2：每個收件人是否可送達 ---
+    ok_all = True
+    for chat_id in _parse_chats(c["chat_id"]):
+        try:
+            r = requests.post(url + "/getChat",
+                              json={"chat_id": chat_id}, timeout=15)
+            js = r.json()
+        except Exception as e:
+            logs.append(f"{chat_id}: getChat 連線失敗（不阻擋）：{e}")
+            continue
+        if not js.get("ok"):
+            logs.append(f"{chat_id}: 無法存取 — "
+                        f"{js.get('description', '')}")
+            ok_all = False
+            continue
+        ctype = js["result"].get("type")
+
+        # 頻道 / 超級群組要再確認 bot 有發布權限
+        if ctype in ("channel", "supergroup"):
+            try:
+                r = requests.post(url + "/getChatAdministrators",
+                                  json={"chat_id": chat_id}, timeout=15)
+                ajs = r.json()
+            except Exception as e:
+                logs.append(f"{chat_id}: 管理員查詢連線失敗（不阻擋）：{e}")
+                continue
+            if not ajs.get("ok"):
+                logs.append(f"{chat_id}: bot 不是管理員 — "
+                            f"{ajs.get('description', '')}")
+                logs.append("→ 請把 bot 加入該頻道管理員並開啟「發布訊息」")
+                ok_all = False
+                continue
+            mine = next((m for m in ajs["result"]
+                         if m["user"]["id"] == bot_id), None)
+            if mine is None:
+                logs.append(f"{chat_id}: bot 不在管理員名單 → 送出會 403")
+                ok_all = False
+            elif mine.get("can_post_messages") is False:
+                logs.append(f"{chat_id}: bot 是管理員但無「發布訊息」權限")
+                ok_all = False
+            else:
+                logs.append(f"{chat_id}: 頻道發布權 OK "
+                            f"({mine.get('status')})")
+        else:
+            logs.append(f"{chat_id}: {ctype} 可達")
+
+    return ok_all, logs
