@@ -106,9 +106,9 @@ streamlit run app.py
 2. 在 Settings → Secrets 加入：
    ```toml
    [telegram]
-   bot_token = "8993139052:AAFltUb8MoxA-tLaU0nRZhdt63FINnnmuMA"
+   bot_token = "{你的 bot token — 見 GH Secret / BotFather}"
    chat_id = "@teddy_stockreport"
-   chat_id_private = "5506547630"
+   chat_id_private = "{你的私人 chat ID}"
 
    [github]
    token = "{GitHub PAT — 用於 DB 自動同步}"
@@ -125,11 +125,17 @@ streamlit run app.py
 |------|---------|---------|
 | Telegram Bot Token | `數字:英數混合` | @BotFather → /mybots |
 | 公開 channel | `@teddy_stockreport` | 既有 channel |
-| 私人 chat ID | `5506547630` | 自己 user ID（getUpdates 查） |
+| 私人 chat ID | `數字 user ID` | 自己 user ID（getUpdates 查） |
 | GitHub repo | `{user}/{repo}` | GitHub URL |
 | GitHub PAT | `github_pat_xxx...` | GH Settings → Developer settings → PAT |
 
 ⚠️ **這些是私密憑證**，絕對不要 push 到 public repo / 截圖 / 公開分享。
+
+> **2026-09-17 事故紀錄**：此檔第 109 行原本誤寫了真實 bot token，
+> 隨 commit `1bf8d64`（2026-06-21）推上 **public** repo，導致 Telegram
+> 撤銷該 token，09-17 的 08:30 推送整批失敗（run #139）。
+> 本檔案內**一律只放 placeholder**，實際值只存在於：
+> `.streamlit/secrets.toml`（gitignored）與 GitHub Actions Secrets。
 舊機器上完整值在這些位置：
 - 本機 `每日推送TG.bat` 第 17-19 行
 - GitHub repo 的 Settings → Secrets and variables → Actions
@@ -152,7 +158,7 @@ streamlit run app.py
       - auto_close_expired() 結算到期 session
       - build_daily_report() 組報告
       - 公開推 channel @teddy_stockreport
-      - 私人推 5506547630（含 Track Record + 資金配置）
+      - 私人推 123456789（含 Track Record + 資金配置）
       - auto_lock_today_picks() 把推薦鎖進 realbacktest.db
    d. git commit + push realbacktest.db（含 retry）
 3. 結束（總時長 5-10 分鐘）

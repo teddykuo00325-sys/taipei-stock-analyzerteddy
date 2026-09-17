@@ -47,8 +47,8 @@ def _cfg() -> dict | None:
       2. Streamlit secrets [telegram] block
 
     chat_id 支援多種格式：
-      - 單一字串："5506547630"
-      - 多個逗號分隔："5506547630,-1001234567890,@my_channel"
+      - 單一字串："123456789"
+      - 多個逗號分隔："123456789,-1001234567890,@my_channel"
       - Streamlit secrets 也可用 list: chat_id = ["123", "456"]
     """
     import os
