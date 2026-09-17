@@ -154,8 +154,34 @@ bear:      allow_long=False, allow_short=True,  capital=1.0  (gap<=-3 且 close<
 - 做空淨虧損（long +0.24% vs short -0.55% 單位資金報酬，N=13 太小）
 - 集中度：`per_stock = capital / top_n`，當日僅 1 檔時 all-in 100%
 
+### 2026-09-17 起：**鎖單延到 09:08**（盤前試撮價防護）
+
+**問題**：workflow 08:30 觸發時台股尚未開盤（09:00 開），`_live_entry_price()`
+拿 MIS `current` 得到的是**盤前試撮參考價** —— 早盤委託未撮合時會被推到
+漲跌停上限，並非真實成交價。
+
+實測（08-05~09-03，N=38）：15 筆進出場價落在當日 OHLC 區間外，3 筆恰為
+「前一日收盤 × 1.0999」= 漲停價。以當日開盤價修正後，淨績效
+**-14.09% → -18.26%**（空單進場價虛高 → 虛增獲利，修正後三筆最大「獲利」
+空單全變虧損）。
+
+**修法**：
+- `realbacktest.LIVE_PRICE_SAFE_TIME = 09:08`、`live_price_trustworthy()`
+- `_live_entry_price()` 在 09:08 前**完全不呼叫** `live.quotes()`，改走
+  price_cache / fallback
+- `daily_report._wait_until_market_open()`：鎖單前 sleep 到 09:08
+  （上限 `_MAX_LOCK_WAIT_MIN = 45` 分，超過則不等但明確警告）
+- **報告本身仍 08:30 正常推出**，只有「鎖單」動作往後挪；私人 addendum
+  因排在鎖單之後，會在 09:08 後才送達
+
+**連動**：`daily-tg-report.yml` 的 timeout 必須放寬，否則會被誤砍
+- job `timeout-minutes` 60 → **90**
+- 「Run daily report sender」step 20 → **50**（近 10 次實測平均僅 2.2 分，
+  但要容納最多 38 分鐘等待）
+- retry step 維持 20（觸發時已過 09:08，不需再等）
+
 ### GH Actions Workflow 可靠性
-- `daily-tg-report.yml`: send step **20 min timeout** + retry step（with `/tmp/tg_sent_ok` marker 防雙推）
+- `daily-tg-report.yml`: send step **50 min timeout**（2026-09-17 由 20 放寬，容納等到 09:08 鎖單）+ retry step 20 min（with `/tmp/tg_sent_ok` marker 防雙推）
 - 兩支 workflow 都有 dedup（`_check_gh_runs_today` 用 run_number tiebreaker 避免並行 dispatch 死鎖）
 
 ---
@@ -178,6 +204,8 @@ bear:      allow_long=False, allow_short=True,  capital=1.0  (gap<=-3 且 close<
 | 08-03 | dedup 死鎖：並行 dispatch 互看 in_progress 都 skip | 用 `run_number` tiebreaker |
 | 08-04 | `_section_capital_allocation` else 落入「強空頭」文案 | 改 dict lookup, 5 個 label 都有對應 |
 | 08-27 | Scoring loop sequential，單檔卡住 hang 全部 | 8-worker 平行 + 60s per-task timeout |
+| 09-17 | bot token 明文寫進 public repo 的 `SETUP.md:109` → Telegram 撤銷 token，08:30 推送全失敗 | 清除明文改 placeholder；換發新 bot 並重設頻道管理員權限 |
+| 09-17 | 08:30 鎖單抓到盤前試撮價（漲跌停），15/38 筆進出場價落在當日 OHLC 區間外 | 鎖單延到 09:08 + `live_price_trustworthy()` 守門 |
 
 ---
 
@@ -224,6 +252,9 @@ python -c "from analyzer import realbacktest; print(realbacktest.track_record(si
 ## 變更紀錄
 
 - 2026-09-02 建立此檔（Claude 帳號轉換用）
+- 2026-09-17 TG 推送中斷事故：bot token 因寫在 public repo 的 SETUP.md 被 Telegram
+  撤銷。已清除明文、換發新 bot（id 8638236811 @TeddyKuo_TEST_bot，舊 bot 帳號已刪除）、
+  重設頻道管理員權限。同日修正盤前試撮價 bug（鎖單延到 09:08）。
 - 2026-09-03 專案轉到 Claude Desktop（Code tab）；`.venv` 為空殼已重建（49 套件，
   pandas 3.0.5 / numpy 2.4.6 / streamlit 1.63.0 / yfinance 1.7.0 — 均為大版本跳躍，
   analyzer 全模組 import 通過）。新增第 6 節「2026-09-03 出場邏輯改造 + score 解飽和」。

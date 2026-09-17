@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time as dtime, timedelta, timezone
 from pathlib import Path
 from threading import Lock
 from typing import Literal
@@ -26,6 +26,36 @@ from . import live, price_cache, backtest_filter
 DB_PATH = Path(__file__).parent.parent / "data" / "realbacktest.db"
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 _lock = Lock()
+
+# ============================================================
+# 盤前試撮價防護（2026-09-17）
+# ============================================================
+# 台股 08:30-09:00 為盤前試撮期，MIS API 回的 current 是「試撮參考價」，
+# 在早盤委託尚未撮合時會被推到漲跌停上限，並非真實成交價。
+#
+# 實測損害（08-05~09-03，N=38）：15 筆進場/出場價落在當日 OHLC 區間外，
+# 其中 3 筆恰為「前一日收盤 × 1.0999」= 漲停價：
+#     佳凌 4976   記錄 45.70  當日實際 37.80-42.00
+#     長榮鋼 2211 記錄 88.50  當日實際 80.10-81.20
+#     新保 9925   記錄 43.20  當日實際 39.60-40.05
+# 以當日開盤價修正後，淨績效由 -14.09% 變成 -18.26%（空單虛胖最嚴重）。
+#
+# 對策：09:00 開盤後給 8 分鐘讓真實成交價穩定，09:08 之前一律不採信
+# MIS 即時價，改走 price_cache / fallback。
+TPE_TZ = timezone(timedelta(hours=8))
+LIVE_PRICE_SAFE_TIME = dtime(9, 8)
+
+
+def now_tpe() -> datetime:
+    """當前台北時間（GH Actions 跑在 UTC 也正確）."""
+    return datetime.now(TPE_TZ)
+
+
+def live_price_trustworthy(now: datetime | None = None) -> bool:
+    """現在是否已過 09:08（= MIS 即時價可信）."""
+    n = now or now_tpe()
+    return n.time() >= LIVE_PRICE_SAFE_TIME
+
 
 # ============================================================
 # Track Record 重置基準（用戶 2026-08-05 決定重新起算）
@@ -182,15 +212,19 @@ def _live_entry_price(code: str, fallback: float) -> tuple[float, str]:
       2. price_cache 最新收盤（若已是今日）
       3. fallback（screener 報的價，通常是前一交易日收盤）
 
+    ★ 2026-09-17：09:08 之前（盤前試撮期）不採信 MIS 即時價，
+      避免把漲跌停試撮參考價記成進場價。
+
     回傳 (price, source)，source ∈ {'live', 'eod', 'fallback'}.
     """
-    try:
-        quotes = live.quotes([code])
-        q = quotes.get(code)
-        if q and q.current and q.current > 0:
-            return float(q.current), "live"
-    except Exception:
-        pass
+    if live_price_trustworthy():
+        try:
+            quotes = live.quotes([code])
+            q = quotes.get(code)
+            if q and q.current and q.current > 0:
+                return float(q.current), "live"
+        except Exception:
+            pass
     try:
         df = price_cache._load(code)
         if not df.empty:

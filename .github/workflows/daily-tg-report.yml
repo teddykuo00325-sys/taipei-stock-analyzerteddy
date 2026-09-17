@@ -22,7 +22,9 @@ permissions:
 jobs:
   send:
     runs-on: ubuntu-latest
-    timeout-minutes: 60   # 雲端機器慢時 screener.screen 可能 25-40 分鐘
+    # 08:30 觸發 → 報告照常送出 → 等到 09:08 才鎖單（避開盤前試撮價）
+    # → 單次 job 最壞 ≈ 38 分等待 + screener + retry，故放寬到 90
+    timeout-minutes: 90
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -43,9 +45,12 @@ jobs:
           pip install -r requirements.txt
 
       - name: Run daily report sender
-        # ★ step-level 20 分鐘 hard timeout（原 job-level 60 分太寬）
-        # send 正常 3-5 分鐘完成；卡住時 20 分自動 fail 進入 retry
-        timeout-minutes: 20
+        # ★ step-level hard timeout
+        # send 本身正常 1-7 分鐘完成（近 10 次平均 2.2 分）。
+        # 2026-09-17 起 _auto_lock_today_picks() 會等到台北 09:08 才鎖單，
+        # 避免用到 08:30-09:00 盤前試撮參考價（曾把進場價記成漲停價）。
+        # 08:30 觸發 → 最長多等 38 分 → 上限拉到 50 分才不會被誤砍。
+        timeout-minutes: 50
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -59,6 +64,7 @@ jobs:
 
       # ★ 若 step 1 (send) 因 timeout 或例外失敗 → retry 一次
       # 讀 /tmp/tg_sent_ok marker：若第一次已成功送到 TG，跳過 retry 避免雙推
+      # retry 觸發時通常已過 09:08，不需再等待 → 維持 20 分即可
       - name: Retry send on failure (last-resort)
         if: failure()
         timeout-minutes: 20

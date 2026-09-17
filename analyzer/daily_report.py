@@ -894,15 +894,50 @@ def build_daily_report(top_n: int = 4,
     return "\n".join(parts)
 
 
+# 鎖單最長等待（分鐘）。08:30 觸發 → 09:08 約需 38 分鐘；
+# 設 45 分上限，避免 screener 異常時把 GH Actions job 拖爆
+# （workflow timeout-minutes: 60）。
+_MAX_LOCK_WAIT_MIN = 45
+
+
+def _wait_until_market_open() -> str:
+    """等到台北 09:08 再鎖單；回傳 log 訊息（不需等待時回空字串）."""
+    import time as _time
+
+    now = _now_tpe()
+    if realbacktest.live_price_trustworthy(now):
+        return ""
+    target = now.replace(hour=realbacktest.LIVE_PRICE_SAFE_TIME.hour,
+                         minute=realbacktest.LIVE_PRICE_SAFE_TIME.minute,
+                         second=0, microsecond=0)
+    wait_s = (target - now).total_seconds()
+    if wait_s <= 0:
+        return ""
+    if wait_s > _MAX_LOCK_WAIT_MIN * 60:
+        # 超出上限（例如凌晨被手動觸發）→ 不等，但明確標記價格來源不可信
+        return (f"⚠️ 現在 {now:%H:%M} 距 09:08 超過 {_MAX_LOCK_WAIT_MIN} 分，"
+                f"不等待；進場價將走 cache/fallback 而非即時價")
+    _time.sleep(wait_s)
+    return f"⏳ 等待至 09:08 再鎖單（等了 {wait_s/60:.0f} 分）"
+
+
 def _auto_lock_today_picks(top_n: int) -> list[str]:
     """把 _LAST_PICKS 緩存的 long / short 推薦 lock 進 realbacktest.
 
     呼叫前 _section_picks 必須已執行過（緩存才有資料）。
     每邊資金預設 100 萬 × capital_scale（regime-aware）。
     回傳 ['long #123 (5 檔)', ...] log 訊息。
+
+    ★ 2026-09-17：鎖單前等到台北 09:08。08:30 觸發時台股尚未開盤，
+      MIS 回的是盤前試撮參考價（可能是漲跌停），會污染進場價。
+      報告本身仍在 08:30 正常推出，只有「鎖單」這個動作往後挪。
     """
     msgs = []
     base_capital = 1_000_000
+
+    waited = _wait_until_market_open()
+    if waited:
+        msgs.append(waited)
     for side in ("long", "short"):
         picks = _LAST_PICKS.get(side) or []
         if not picks or not _LAST_PICKS.get(f"{side}_proceed"):
