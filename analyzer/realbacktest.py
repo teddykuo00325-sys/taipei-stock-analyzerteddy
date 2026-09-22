@@ -104,8 +104,15 @@ def _current_price(code: str) -> tuple[float | None, str]:
 
     優先順序：
       1. live MIS 即時（盤中或剛收盤後最準確）
-      2. price_cache 最新收盤（盤後或停牌時）
-    回傳 (price, source) 其中 source ∈ {'live', 'cache'} or (None, 'none').
+      2. price_cache 最新收盤 —— ★ 但必須是「今日」的 K 線
+
+    ★ 2026-09-22：原本 cache fallback 沒有日期檢查，拿到什麼就用什麼。
+    配合 live.quotes() 當時漏查上櫃股的 bug，實測 4714 永捷（進場日
+    09-21）被拿 09-17 的收盤 11.50 當現價 —— 用比進場日更早的價格算
+    進場後的損益。live 的 bug 已修，但這裡的日期檢查是獨立的第二道防線：
+    寧可回 None（呼叫端 skip），也不要用過期價格。
+
+    回傳 (price, source)，source ∈ {'live', 'cache'} or (None, 'none').
     """
     try:
         qs = live.quotes([code])
@@ -117,7 +124,9 @@ def _current_price(code: str) -> tuple[float | None, str]:
     try:
         df = price_cache._load(code)
         if not df.empty:
-            return float(df["close"].iloc[-1]), "cache"
+            last_date = df.index[-1].date().isoformat()
+            if last_date == date.today().isoformat():
+                return float(df["close"].iloc[-1]), "cache"
     except Exception:
         pass
     return None, "none"
@@ -684,20 +693,27 @@ def close_session(session_id: int) -> tuple[int, float]:
 
     total_pnl = 0.0
     closed = 0
+    skipped: list[str] = []
     with _lock, _conn() as c:
         for h in holdings:
             if h.exit_price is not None:
                 continue
             cur = live_map.get(h.code)
             if cur is None:
-                # fallback: price_cache 最新收盤
+                # fallback: price_cache 最新收盤 —— ★ 必須是今日
+                # 2026-09-22：原本沒有日期檢查，會把數日前的收盤寫成
+                # exit_price。改為「拿不到今日價就 skip，保持 open」
+                # （寧可晚一天結算，不要記錯出場價）。
                 try:
                     df = price_cache._load(h.code)
                     if not df.empty:
-                        cur = float(df["close"].iloc[-1])
+                        last_date = df.index[-1].date().isoformat()
+                        if last_date == today:
+                            cur = float(df["close"].iloc[-1])
                 except Exception:
                     pass
             if cur is None:
+                skipped.append(h.code)
                 continue
             c.execute(
                 "UPDATE realbt_holding SET exit_date=?, exit_price=? "
@@ -708,10 +724,16 @@ def close_session(session_id: int) -> tuple[int, float]:
             if pnl is not None:
                 total_pnl += pnl
             closed += 1
-        c.execute(
-            "UPDATE realbt_session SET status='closed' WHERE id=?",
-            (session_id,),
-        )
+        # ★ 2026-09-22：仍有持股拿不到「今日」價格 → 保持 open，
+        # 等下一輪（08:30 / 13:30）再結，避免用過期價格記錯出場價。
+        if not skipped:
+            c.execute(
+                "UPDATE realbt_session SET status='closed' WHERE id=?",
+                (session_id,),
+            )
+    if skipped:
+        print(f"[close_session #{session_id}] {len(skipped)} 檔無今日價格，"
+              f"保持 open 待下輪結算：{', '.join(skipped)}")
     return closed, total_pnl
 
 

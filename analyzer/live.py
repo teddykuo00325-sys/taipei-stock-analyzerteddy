@@ -121,6 +121,17 @@ def _get(ex_ch: str, max_age_sec: float = 5.0):
     return _cache[ex_ch]["v"]
 
 
+def _has_data(rows) -> bool:
+    """MIS 對「代號存在但市場錯」會回一個欄位全空的殼 row.
+
+    ★ 2026-09-22 bug：原本 quote() 只判斷 `if rows:`（list 非空），
+    對上櫃股查 tse_ 會拿到這種空殼 row → 直接 return，永遠不會往下
+    試 otc_。實測 tse_4714.tw 回 [{c:'', z:None, o:None, ...}]，
+    而 otc_4714.tw 才是正確資料。
+    """
+    return bool(rows) and bool(rows[0].get("c"))
+
+
 def quote(code: str) -> Quote | None:
     """取單一股票即時報價（先試上市，再試上櫃）."""
     code = code.strip().upper()
@@ -130,11 +141,11 @@ def quote(code: str) -> Quote | None:
         code = code[:-4]
     # 上市
     rows = _get(f"tse_{code}.tw")
-    if rows:
+    if _has_data(rows):
         return _parse(rows[0])
     # 上櫃
     rows = _get(f"otc_{code}.tw")
-    if rows:
+    if _has_data(rows):
         return _parse(rows[0])
     return None
 
@@ -154,6 +165,14 @@ def quotes(codes: list[str], chunk_size: int = 100,
     total = len(norm)
     if total == 0:
         return out
+    # ★ 2026-09-22 bug 修正：原本只送 tse_ 前綴，上櫃股永遠拿不到即時價，
+    # 呼叫端（realbacktest._current_price / close_session）會靜默退回
+    # price_cache 的最後一根 K 線 —— 實測 4714 永捷進場日 09-21，卻拿到
+    # 09-17 的收盤 11.50 當「現價」，報酬算成 -4.96%（實際 +2.48%）。
+    #
+    # 改成兩段式：先整批查 tse_（上市佔絕大多數，維持單輪），
+    # 沒回資料的再用 otc_ 補一輪。比「每 chunk 同送兩種前綴」省一半請求
+    # （MIS 限 100 key/請求，同送會讓 chunk 砍半、呼叫次數加倍）。
     for i in range(0, total, chunk_size):
         chunk = norm[i:i + chunk_size]
         ex_ch = "|".join(f"tse_{c}.tw_" for c in chunk)
@@ -162,6 +181,15 @@ def quotes(codes: list[str], chunk_size: int = 100,
             q = _parse(row)
             if q.code:
                 out[q.code] = q
+        # 上櫃補查：這一批裡 tse_ 沒回資料的
+        missing = [c for c in chunk if c not in out]
+        if missing:
+            ex_otc = "|".join(f"otc_{c}.tw_" for c in missing)
+            rows_otc = _get(ex_otc, max_age_sec=30) or []
+            for row in rows_otc:
+                q = _parse(row)
+                if q.code:
+                    out[q.code] = q
         if progress_cb:
             progress_cb(min(1.0, (i + chunk_size) / total),
                         f"抓取盤中 {min(i + chunk_size, total)} / {total}")
