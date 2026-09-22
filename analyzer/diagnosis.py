@@ -109,8 +109,86 @@ def _action(score: int, ma_state: str, weekly_bull: bool | None) -> tuple[str, s
     return "觀望", "方向不明，建議觀望等待訊號"
 
 
+# ============================================================
+# 前波漲幅投射（measured move）2026-09-22
+# ============================================================
+# 背景：原本目標價在「創新高、上方無壓力」時會退回機械式
+# 「當日高點 x 1.05」（40 檔實測佔 35%），沒有任何結構依據。
+#
+# 為什麼不用純 ATR 倍數投射：
+#   R:R 的分母已經是 max(MA10 距離, 1.5 x ATR)，實測 65% 的標的由
+#   ATR 下限決定。若分子也用 k x ATR，R:R 會變成接近固定的 k/1.5，
+#   完全失去鑑別力 —— 過濾器會退化成一個常數。
+#   所以分子必須用**與波動度無關**的結構量，ATR 只保留為最小距離。
+#
+# 採用「量測波幅」(measured move)：取最後一段完整推進波的幅度，
+# 自其後的回檔基準投射。這也是朱家泓派量波幅的標準作法。
+TARGET_ATR_MIN_MULT = 2.0   # 目標價最小距離 = 2 x ATR14
+
+
+def _normalize_pivots(pivots: list) -> list:
+    """把 wave._find_pivots 的輸出整理成 H/L 交替序列.
+
+    _find_pivots 是高低點各自獨立找再合併排序，會出現連續同型
+    （例如 2454 出現 H4345 → H3875）。連續同型只保留極值：
+    H 取最高、L 取最低。
+    """
+    out: list = []
+    for p in (pivots or []):
+        if out and out[-1][1] == p[1]:
+            keep_new = ((p[1] == "H" and p[2] > out[-1][2]) or
+                        (p[1] == "L" and p[2] < out[-1][2]))
+            if keep_new:
+                out[-1] = p
+        else:
+            out.append(p)
+    return out
+
+
+def _measured_move(pivots: list, stance: str) -> tuple[float | None, str]:
+    """前波幅度投射；回傳 (target, note)，無法計算時 (None, "").
+
+    多方：由後往前找最後一組相鄰的 (L, H)，幅度 amp = H - L。
+          若該 H 之後還有回檔低點 L2，以 L2 為投射基準（突破後量測），
+          否則以 H 本身為基準。target = base + amp。
+    空方對稱。
+    """
+    ps = _normalize_pivots(pivots)
+    if len(ps) < 3:
+        return None, ""
+
+    if stance in ("多方", "偏多"):
+        for i in range(len(ps) - 1, 0, -1):
+            if ps[i][1] == "H" and ps[i - 1][1] == "L":
+                amp = float(ps[i][2]) - float(ps[i - 1][2])
+                if amp <= 0:
+                    return None, ""
+                base = float(ps[i][2])
+                if i + 1 < len(ps) and ps[i + 1][1] == "L":
+                    base = float(ps[i + 1][2])
+                return (base + amp,
+                        f"前波漲幅投射（波幅 {amp:.1f} 自 {base:.1f} 起算）")
+        return None, ""
+
+    if stance in ("空方", "偏空"):
+        for i in range(len(ps) - 1, 0, -1):
+            if ps[i][1] == "L" and ps[i - 1][1] == "H":
+                amp = float(ps[i - 1][2]) - float(ps[i][2])
+                if amp <= 0:
+                    return None, ""
+                base = float(ps[i][2])
+                if i + 1 < len(ps) and ps[i + 1][1] == "H":
+                    base = float(ps[i + 1][2])
+                return (max(base - amp, 0.0),
+                        f"前波跌幅投射（波幅 {amp:.1f} 自 {base:.1f} 起算）")
+        return None, ""
+
+    return None, ""
+
+
 def _target(df: pd.DataFrame, pats: list, stance: str,
-            resistance: float, support: float) -> tuple[float | None, str]:
+            resistance: float, support: float,
+            pivots: list | None = None) -> tuple[float | None, str]:
     """計算目標價；含 sanity check 確保 long target > price / short target < price.
 
     Bug fix：原邏輯用「近期壓力」當多方目標，但壓力已跌破時 target 可能低於
@@ -131,6 +209,17 @@ def _target(df: pd.DataFrame, pats: list, stance: str,
             raw_target = float(max(p.neckline - (top - p.neckline), 0))
             note = f"{p.name} 跌破頸線幅度推算"
             break
+
+    # ★ 2026-09-22：型態頸線之後、機械式壓力之前，先試前波幅度投射。
+    # 這一層專門接住「創新高、上方無壓力」的情形 —— 原本會掉進
+    # 「當日高點 x 1.05」那種沒有結構依據的機械值。
+    if raw_target is None:
+        mm, mm_note = _measured_move(pivots, stance)
+        if mm is not None:
+            if stance in ("多方", "偏多") and mm > price:
+                raw_target, note = mm, mm_note
+            elif stance in ("空方", "偏空") and mm < price:
+                raw_target, note = mm, mm_note
 
     if raw_target is None:
         if stance in ("多方", "偏多"):
@@ -159,6 +248,20 @@ def _target(df: pd.DataFrame, pats: list, stance: str,
             recent_low = float(df["low"].tail(20).min())
             raw_target = min(recent_low, price * 0.95)
             note = "支撐已破 → 用近 20 日低點或 -5% (fallback)"
+
+    # ★ 目標價最小距離 = 2 x ATR14。
+    # 比這更近的目標在雜訊之內，R:R 算出來沒有意義。
+    # 這只是下限（很少觸發），上限仍由 diagnose() 的 ±20% cap 控制。
+    if "atr14" in df.columns and not pd.isna(df["atr14"].iloc[-1]):
+        atr = float(df["atr14"].iloc[-1])
+        if atr > 0:
+            floor = TARGET_ATR_MIN_MULT * atr
+            if stance in ("多方", "偏多") and raw_target < price + floor:
+                raw_target = price + floor
+                note += f"（已抬升至 {TARGET_ATR_MIN_MULT}xATR 下限）"
+            elif stance in ("空方", "偏空") and raw_target > price - floor:
+                raw_target = max(price - floor, 0.0)
+                note += f"（已下修至 {TARGET_ATR_MIN_MULT}xATR 下限）"
 
     return float(raw_target), note
 
@@ -384,7 +487,8 @@ def diagnose(df: pd.DataFrame,
         elif ma_state in ("均線糾結", "盤整"):
             cont_label = "震盪"
     target_price, target_note = _target(df, pats, stance,
-                                        trend["resistance"], trend["support"])
+                                        trend["resistance"], trend["support"],
+                                        pivots=w.pivots)
 
     price = float(df["close"].iloc[-1])
     ma5 = df["ma5"].iloc[-1] if "ma5" in df.columns else None
