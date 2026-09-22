@@ -37,6 +37,10 @@ class Diagnosis:
     target_price: float | None = None
     target_note: str = ""
     risk_reward: float | None = None
+    # R:R 用的「操作停損」— 對齊 realbacktest 實際的 MA10 移動停利出場，
+    # 而非 stop_levels 的結構支撐（見 _rr_stop 說明）
+    rr_stop: float | None = None
+    rr_stop_note: str = ""
     entry_zone: tuple[float, float] | None = None
     # 續漲/續跌標籤
     continuation_label: str = ""   # "續漲" / "續跌" / "震盪" / ""
@@ -157,6 +161,55 @@ def _target(df: pd.DataFrame, pats: list, stance: str,
             note = "支撐已破 → 用近 20 日低點或 -5% (fallback)"
 
     return float(raw_target), note
+
+
+# ============================================================
+# R:R 操作停損（2026-09-22）
+# ============================================================
+# 問題：realbacktest.check_technical_stop() 實際上是「跌破 MA10 出場」
+# （未實現獲利 >= 10% 時收緊到 MA5），但 risk_reward 的分母卻取
+# stop_levels 算出的結構支撐 —— 兩者是不同的東西。
+#
+# 2454 實例（2026-09-21）：
+#     進場區中值 4646 ｜ 結構停損 3655（-21.3%）｜ 實際出場 MA10 ≈ 4644
+#     R:R = 0.64 → 被 _rr_ok 濾掉
+# 分母用一個系統根本不會執行的停損，R:R 就不描述系統真正在做的事。
+#
+# 另外實測（40 檔）：目標價走「機械式 +5%」分支者佔 35%，其通過
+# R:R >= 1.5 的比率只有 29%（型態頸線分支是 75%）。單純把目標價換成
+# 3xATR 只讓通過數 4/14 → 5/14，證明病灶在分母不在分子。
+#
+# 改法：以 MA10 為風險基準，並以 1.5xATR 當「最小風險距離」——
+# 因為進場區本身常常就是 MA5/MA10，距離趨近 0 會讓 R:R 爆成無限大。
+RR_ATR_FLOOR_MULT = 1.5
+
+
+def _rr_stop(df: pd.DataFrame, stance: str,
+             entry_ref: float) -> tuple[float | None, str]:
+    """回傳 (R:R 用的操作停損, 說明)；無法計算時回 (None, "")."""
+    if not entry_ref or entry_ref <= 0:
+        return None, ""
+    ma10 = None
+    if "ma10" in df.columns and not pd.isna(df["ma10"].iloc[-1]):
+        ma10 = float(df["ma10"].iloc[-1])
+    atr = None
+    if "atr14" in df.columns and not pd.isna(df["atr14"].iloc[-1]):
+        atr = float(df["atr14"].iloc[-1])
+    if atr is None or atr <= 0:
+        return None, ""
+
+    floor = RR_ATR_FLOOR_MULT * atr
+    if stance in ("多方", "偏多"):
+        ma_dist = (entry_ref - ma10) if ma10 is not None else 0.0
+        dist = max(ma_dist, floor)
+        src = "MA10" if dist == ma_dist and ma_dist > 0 else "1.5xATR"
+        return entry_ref - dist, f"操作停損（{src}）"
+    if stance in ("空方", "偏空"):
+        ma_dist = (ma10 - entry_ref) if ma10 is not None else 0.0
+        dist = max(ma_dist, floor)
+        src = "MA10" if dist == ma_dist and ma_dist > 0 else "1.5xATR"
+        return entry_ref + dist, f"操作停損（{src}）"
+    return None, ""
 
 
 def _weekly_bias(weekly_df: pd.DataFrame | None,
@@ -435,10 +488,17 @@ def diagnose(df: pd.DataFrame,
         elif stance in ("空方", "偏空"):
             target_price = max(target_price, cap_ref * 0.80)
 
+    # ★ 2026-09-22：R:R 分母改用「操作停損」（對齊 MA10 實際出場規則），
+    # 取不到時才退回原本的結構停損，保持向後相容。
+    rr_stop, rr_stop_note = _rr_stop(df, stance, entry_ref)
+    if rr_stop is None:
+        rr_stop = stops.get("short_stop")
+        rr_stop_note = "結構停損（無 ATR，fallback）"
+
     risk_reward = None
-    if target_price and stops.get("short_stop"):
+    if target_price and rr_stop:
         reward = abs(target_price - entry_ref)
-        risk = abs(entry_ref - stops["short_stop"])
+        risk = abs(entry_ref - rr_stop)
         if risk > 0:
             risk_reward = round(reward / risk, 2)
 
@@ -480,6 +540,8 @@ def diagnose(df: pd.DataFrame,
         abs_stop=stops["abs_stop"],
         target_price=target_price, target_note=target_note,
         risk_reward=risk_reward, entry_zone=entry_zone,
+        rr_stop=(round(float(rr_stop), 2) if rr_stop else None),
+        rr_stop_note=rr_stop_note,
         institutional_info=inst_info, institutional_note=inst_note,
         institutional_score=inst_s,
         margin_info=marg_info, margin_note=marg_note, margin_score=marg_s,

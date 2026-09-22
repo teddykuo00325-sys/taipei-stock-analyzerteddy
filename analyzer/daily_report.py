@@ -295,7 +295,19 @@ _LAST_PICKS: dict = {
 }
 
 
-MIN_RR = 1.5   # R:R < 1.5 顯示 ⚠️（不硬過濾以免整天無推薦）
+# R:R 門檻（2026-09-22 由 1.5 上調到 1.8）
+# 同日把 R:R 的分母改成「操作停損」（MA10 / 1.5xATR，對齊實際出場規則），
+# 分母普遍變小 → R:R 整體上移，中位數由 ~1.56 升到 2.38，
+# 沿用 1.5 會讓通過率衝到 80%（等於失去過濾作用）。
+#
+# 40 檔實測，各門檻通過率（整體 / 目標價機械式分支 / 其他分支）：
+#     1.5   80%  /  86%  /  77%
+#     1.8   62%  /  57%  /  65%     <-- 採用
+#     2.0   55%  /  36%  /  65%
+# 選 1.8 的理由：選擇性回到跟舊制相當（62% vs 舊 55%），同時把
+# 「機械式目標價分支被結構性歧視」的落差從 46pp 壓到 8pp。
+# 2.0 雖然選擇性最貼近舊制，但分支落差又回到 29pp。
+MIN_RR = 1.8
 
 
 def _pick_trade_details(p: dict, side: str = "long") -> str:
@@ -310,7 +322,10 @@ def _pick_trade_details(p: dict, side: str = "long") -> str:
         return ""
 
     entry_zone = getattr(diag, 'entry_zone', None)
-    stop = getattr(diag, 'short_stop', None)
+    # ★ 2026-09-22：顯示 R:R 實際採用的操作停損（MA10 / 1.5xATR），
+    # 與系統真正的出場規則一致；取不到才退回結構停損。
+    stop = (getattr(diag, 'rr_stop', None)
+            or getattr(diag, 'short_stop', None))
     target = getattr(diag, 'target_price', None)
     rr = getattr(diag, 'risk_reward', None)
 
@@ -387,7 +402,7 @@ def _compute_tldr(long_picks: list, short_picks: list,
         cap_hint = f"僅 {total_good} 檔達標，建議 20-40% 部位"
     else:
         icon, mode = "⚪", "觀望"
-        cap_hint = "⚠️ 今日無 R:R ≥ 1.5 標的，建議<b>休息不進場</b>"
+        cap_hint = (f"⚠️ 今日無 R:R ≥ {MIN_RR} 標的，建議<b>休息不進場</b>")
 
     ex_note = f"（{total_ex} 檔 R:R ≥ 2 優質）" if total_ex else ""
     return (f"📌 <b>今日決策：{icon} {mode}</b>{ex_note}\n"
@@ -443,14 +458,14 @@ def _section_picks(top_n: int = 4) -> str:
     except Exception:
         _disposal_map = {}
 
-    # ★ R:R 硬過濾 — 剔除 R:R < 1.5 的低品質推薦，避免推「⚠️ 偏低」給 user
+    # ★ R:R 硬過濾 — 剔除 R:R < MIN_RR 的低品質推薦，避免推「⚠️ 偏低」給 user
     # 若過濾後不足 top_n，就少推幾檔（保質重於保量）
     def _rr_ok(p: dict) -> bool:
         diag = p.get('_diag')
         if not diag:
             return True   # 沒 diag 資料，保守放行
         rr = getattr(diag, 'risk_reward', None)
-        return rr is None or rr >= 1.5
+        return rr is None or rr >= MIN_RR
 
     long_filtered = ([p for p in rep_l.picks_filtered if _rr_ok(p)][:top_n]
                      if rep_l.proceed else [])

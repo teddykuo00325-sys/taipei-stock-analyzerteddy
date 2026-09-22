@@ -212,6 +212,51 @@ main() 在跑 screener（數分鐘）之前先呼叫，失敗即中止，避免�
 ⚠️ **Sharpe / Sortino / Profit Factor 不受此修正影響** —— 那些走
 `risk_metrics()`，以逐筆持股報酬計算，不經過 `equity_curve()`。
 
+### 2026-09-22：**R:R 分母改用「操作停損」（丙 的第一步）**
+
+**問題**：`risk_reward` 的分母取 `stop_levels` 算出的**結構支撐**，
+但 realbacktest 實際是用 **MA10 移動停利**出場
+（`check_technical_stop()`，獲利 >=10% 收緊到 MA5）。兩者是不同的東西 ——
+TG 上顯示的 R:R 不描述系統真正會做的事。
+
+2454 實例（2026-09-21，收 5010）：
+
+| 角色 | 價位 |
+|---|---:|
+| 進場區 | 4644~4648（MA5/MA10）|
+| R:R 舊分母（結構支撐）| **3655**，風險 -21.3% |
+| 系統實際出場 | MA10 ≈ **4644** |
+
+**連帶效應**：目標價走「機械式 +5%」分支者（40 檔實測佔 **35%**，只在
+創新高、上方無壓力時觸發）通過 R:R >= 1.5 的比率僅 **29%**，
+而型態頸線分支是 **75%** —— 系統在結構性地丟棄自己最強的突破股。
+
+**實測排除了「只換目標價」這條路**：把機械式那 14 檔改用 3xATR 投射，
+通過數只從 4/14 變 5/14。分子調再高也救不回 21% 的分母。
+
+**修法**（`diagnosis.py`）：
+- 新增 `RR_ATR_FLOOR_MULT = 1.5`、`_rr_stop()`、欄位 `rr_stop` / `rr_stop_note`
+- 操作停損 = `entry_ref -/+ max(MA10 距離, 1.5 x ATR14)`
+  （進場區本身常就是 MA5/MA10，距離趨近 0 會讓 R:R 爆成無限大，故設下限）
+- `risk_reward` 分母改用 `rr_stop`；中立 stance 或無 ATR 時退回結構停損
+- `daily_report` 顯示的「停損」同步改用 `rr_stop`
+
+**門檻重新校準**：`MIN_RR` **1.5 → 1.8**（`daily_report.py`，硬過濾與文案
+都改吃這個常數）。分母變小後 R:R 中位數由 ~1.56 升到 2.38，沿用 1.5 會讓
+通過率衝到 80%、等於沒過濾。40 檔實測：
+
+| 門檻 | 整體 | 機械式分支 | 其他分支 | 分支落差 |
+|---:|---:|---:|---:|---:|
+| 1.5 | 80% | 86% | 77% | -9pp |
+| **1.8** | **62%** | **57%** | **65%** | **8pp** |
+| 2.0 | 55% | 36% | 65% | 29pp |
+| 舊制 | 55% | 29% | 75% | **46pp** |
+
+選 1.8：選擇性回到跟舊制相當，同時把分支歧視從 46pp 壓到 8pp。
+
+**下一步（丙 的第二步，尚未做）**：目標價算法改 ATR / 前波漲幅投射。
+分母修好後才量得出分子換算法的真實效果。
+
 ### GH Actions Workflow 可靠性
 - `daily-tg-report.yml`: send step **50 min timeout**（2026-09-17 由 20 放寬，容納等到 09:08 鎖單）+ retry step 20 min（with `/tmp/tg_sent_ok` marker 防雙推）
 - 兩支 workflow 都有 dedup（`_check_gh_runs_today` 用 run_number tiebreaker 避免並行 dispatch 死鎖）
@@ -239,6 +284,7 @@ main() 在跑 screener（數分鐘）之前先呼叫，失敗即中止，避免�
 | 09-17 | bot token 明文寫進 public repo 的 `SETUP.md:109` → Telegram 撤銷 token，08:30 推送全失敗 | 清除明文改 placeholder；換發新 bot 並重設頻道管理員權限 |
 | 09-17 | 08:30 鎖單抓到盤前試撮價（漲跌停），15/38 筆進出場價落在當日 OHLC 區間外 | 鎖單延到 09:08 + `live_price_trustworthy()` 守門 |
 | 09-17 | `equity_curve()` 對並行 session 逐筆複利 → 累積虧損誇大 2 倍（-28.22% 報成 -66.63%），連帶資金配置基準由 71.8 萬縮成 33.4 萬 | 改固定基準 + 逐日已實現損益 |
+| 09-22 | R:R 分母用結構支撐、但實際出場是 MA10 → R:R 不描述系統行為；機械式目標價分支通過率僅 29% vs 其他 75% | 分母改 `_rr_stop()`（MA10 + 1.5xATR 下限），MIN_RR 校準到 1.8 |
 
 ---
 
@@ -285,6 +331,7 @@ python -c "from analyzer import realbacktest; print(realbacktest.track_record(si
 ## 變更紀錄
 
 - 2026-09-02 建立此檔（Claude 帳號轉換用）
+- 2026-09-22 R:R 分母改用操作停損（MA10 + 1.5xATR），MIN_RR 校準 1.5 → 1.8。
 - 2026-09-17 新增 TG 推送前健檢（`telegram_notify.preflight()`）；修正
   `equity_curve()` 對並行 session 逐筆複利的方法論錯誤。
 - 2026-09-17 TG 推送中斷事故：bot token 因寫在 public repo 的 SETUP.md 被 Telegram
