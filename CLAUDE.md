@@ -369,6 +369,44 @@ MIS 對「代號存在但市場錯」會回一個欄位全空的 row
 - 寫入前自動備份至 `data/realbacktest.backup_<timestamp>.db`
   （`.gitignore` 的 `data/*.db` 會排除，白名單只有 `realbacktest.db` 本身）。
 
+### 2026-10-13：**美股 NaN 佔位列防護（含風控閘門靜默失效）**
+
+使用者回報「美股抓不到」。查出是 yfinance 偶發對**個別 symbol** 回一列
+**全 NaN 的佔位資料** —— 同一天其他 symbol 都正常，就那檔是 NaN。
+2026-10-12 中招的是 META 與 SPCX（13 檔裡的 2 檔）。
+
+`_fetch_one()` 直接取 `.iloc[-1]`，NaN 一路流到 TG：
+```
+🟢 📺 Meta　$nan　(+nan%)　⭐⭐⭐
+🟢 🚀 SpaceX　$nan　(+nan%)　⭐⭐
+```
+而且 `NaN >= 0` 為 False，漲跌箭頭固定顯示綠燈。
+
+**⚠️ 更嚴重的是風控閘門**：`overnight_gap_risk()` 原本寫
+```python
+sox_pct = indices.get("^SOX").change_pct if indices.get("^SOX") else 0
+if sox_pct is not None and sox_pct <= -2.0:   # NaN <= -2.0 → False
+elif sox_pct is not None and sox_pct <= -1.0:  # NaN <= -1.0 → False
+```
+`is not None` **擋不住 NaN**，而 NaN 的任何比較都是 False → 直接落到
+low risk。若哪天 `^SOX` 也中這招，**跳空保護會靜默消失且無任何錯誤訊息**。
+缺值時給 `0` 也有同樣問題（`0 <= -2.0` 也是 False）。
+
+**修法**：
+- 甲 `_fetch_one()`：先 `dropna(subset=["Close"])` 再取最後兩筆；算完用
+  `math.isfinite()` 再確認一次，仍非有限數就回 `None`
+  （`_build()` 的 `if not r: continue` 會自動略過該檔，不再印 nan）
+- 乙 `daily_report._section_us_market()`：個別 symbol 的 `last_date` 若
+  落後於區塊標題日期，加註 `(10-09 資料)`，避免把 3 天前的價格當昨收看
+- 丁 `overnight_gap_risk()`：新增 `_val()` helper，缺值或 NaN 一律回
+  `None`（不是 0）。**SOX/SPX 皆不可用 → 視為 medium（做多資金 x0.5）**，
+  reason 標明「美股資料不可用」。單一缺失也會加 medium 旗標。
+  選 medium 的理由：資料缺失不等於市場崩盤，停掉做多太重；當沒事又太輕。
+
+**注意**：這次的 NaN 在約 15 分鐘後由 Yahoo 自行補上（META 742.96、
+SPCX 163.42 都回到 10-12）。**症狀是暫時的，修的是韌性** ——
+尤其是丁那個靜默失效的路徑。
+
 ### GH Actions Workflow 可靠性
 - `daily-tg-report.yml`: send step **50 min timeout**（2026-09-17 由 20 放寬，容納等到 09:08 鎖單）+ retry step 20 min（with `/tmp/tg_sent_ok` marker 防雙推）
 - 兩支 workflow 都有 dedup（`_check_gh_runs_today` 用 run_number tiebreaker 避免並行 dispatch 死鎖）
@@ -399,6 +437,7 @@ MIS 對「代號存在但市場錯」會回一個欄位全空的 row
 | 09-22 | R:R 分母用結構支撐、但實際出場是 MA10 → R:R 不描述系統行為；機械式目標價分支通過率僅 29% vs 其他 75% | 分母改 `_rr_stop()`（MA10 + 1.5xATR 下限），MIN_RR 校準到 1.8 |
 | 09-22 | 目標價在創新高時退回「當日高點 x1.05」（佔 35%），無結構依據 | 新增 `_measured_move()` 前波幅度投射，機械式分支 14→8 檔 |
 | 09-22 | `live.quotes()` 批次只查 tse_、`live.quote()` 被 MIS 空殼 row 誤導 → 上櫃股全部拿不到即時價，退回過期 cache（4714 用了進場日前 4 天的收盤）| 兩段式 tse_→otc_ 補查、`_has_data()` 判斷、cache fallback 加今日檢查 |
+| 10-13 | yfinance 偶發回「全 NaN 佔位列」→ TG 印出 `$nan`；更嚴重的是 `overnight_gap_risk()` 的 `is not None` 擋不住 NaN，`NaN <= -2.0` 為 False → **跳空保護靜默失效** | `_fetch_one()` dropna + `math.isfinite()`；`overnight_gap_risk()` 缺值/NaN 視為 medium 而非 low |
 
 ---
 
@@ -445,6 +484,8 @@ python -c "from analyzer import realbacktest; print(realbacktest.track_record(si
 ## 變更紀錄
 
 - 2026-09-02 建立此檔（Claude 帳號轉換用）
+- 2026-10-13 美股 NaN 佔位列防護；修正 `overnight_gap_risk()` 遇 NaN 會
+  靜默退回 low risk 的風控漏洞。
 - 2026-09-22 修上櫃股即時報價全壞（tse_/otc_ 前綴）＋ 過期價格防護；歷史稽核發現
   高端疫苗 -13.24% 實際只有 -2.88%。
 - 2026-09-22 目標價改前波漲幅投射（丙 第二步完成）；機械式分支由 35% 降到 20%。

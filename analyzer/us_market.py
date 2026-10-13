@@ -17,6 +17,7 @@
 """
 from __future__ import annotations
 
+import math
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from time import time
@@ -66,15 +67,35 @@ _CACHE_TTL = 1800  # 30 分鐘
 
 
 def _fetch_one(symbol: str) -> tuple[float, float, float, str] | None:
-    """單一 ticker 抓最近 5 日，回最後一筆 close + 漲跌 + 日期."""
+    """單一 ticker 抓最近 5 日，回最後一筆 close + 漲跌 + 日期.
+
+    ★ 2026-10-13：yfinance 有時會對某些 symbol 回一列「全 NaN 的佔位
+    資料」—— 當日其他 symbol 都正常，就那檔是 NaN。實測 2026-10-12
+    的 META 與 SPCX 就是這樣（dropna 後最後一筆退回 10-09）。
+
+    原本直接取 .iloc[-1] 會把 NaN 一路帶到 TG，印出
+        🟢 📺 Meta　$nan　(+nan%)
+    而且 `NaN >= 0` 為 False，漲跌箭頭固定顯示綠燈。
+
+    更危險的是 overnight_gap_risk()：若 ^SOX 哪天也中這招，
+    `NaN <= -2.0` 為 False，跳空保護會**靜默失效**。所以在來源端就
+    把 NaN 濾掉，並在算完後再確認一次。
+    """
     try:
         h = yf.Ticker(symbol).history(period="5d")
-        if h.empty or len(h) < 2:
+        if h.empty:
+            return None
+        h = h.dropna(subset=["Close"])
+        if len(h) < 2:
             return None
         last = float(h["Close"].iloc[-1])
         prev = float(h["Close"].iloc[-2])
+        if not (math.isfinite(last) and math.isfinite(prev)) or prev == 0:
+            return None
         chg = last - prev
-        pct = (chg / prev * 100) if prev else 0.0
+        pct = chg / prev * 100
+        if not math.isfinite(pct):
+            return None
         date_str = h.index[-1].strftime("%Y-%m-%d")
         return last, chg, pct, date_str
     except Exception:
@@ -224,13 +245,44 @@ def overnight_gap_risk() -> dict:
     except Exception:
         return {"level": "low", "long_capital_scale": 1.0, "reason": "US 資料無法取得"}
     indices = {q.symbol: q for q in d.get("indices", [])}
-    sox_pct = indices.get("^SOX").change_pct if indices.get("^SOX") else 0
-    spx_pct = indices.get("^GSPC").change_pct if indices.get("^GSPC") else 0
-    vix = indices.get("^VIX").price if indices.get("^VIX") else 0
+
+    def _val(sym: str, attr: str):
+        """取指數欄位；缺資料或 NaN 一律回 None（不要當成 0）."""
+        q = indices.get(sym)
+        if q is None:
+            return None
+        v = getattr(q, attr, None)
+        if v is None:
+            return None
+        try:
+            v = float(v)
+        except (TypeError, ValueError):
+            return None
+        return v if math.isfinite(v) else None
+
+    sox_pct = _val("^SOX", "change_pct")
+    spx_pct = _val("^GSPC", "change_pct")
+    vix = _val("^VIX", "price")
+
+    # ★ 2026-10-13 fail-safe：原本 sox_pct 缺值時給 0，而 `0 <= -2.0`
+    # 與 `0 <= -1.0` 都是 False → 直接落到 low risk，跳空保護靜默消失。
+    # NaN 更糟：`is not None` 擋不住它，任何比較都是 False。
+    # 改為「關鍵指標拿不到 → 視為 medium（做多減碼 50%）」——
+    # 資料缺失不等於市場崩盤，停掉做多太重；但當沒事又太輕。
+    if sox_pct is None and spx_pct is None:
+        return {
+            "level": "medium",
+            "long_capital_scale": 0.5,
+            "reason": "⚠️ 美股 SOX/SPX 資料不可用 → 保守減碼 50%",
+        }
 
     reasons = []
     high_risk = False
     med_risk = False
+    if sox_pct is None or spx_pct is None:
+        miss = "SOX" if sox_pct is None else "SPX"
+        reasons.append(f"⚠️ {miss} 資料不可用")
+        med_risk = True
 
     if sox_pct is not None and sox_pct <= -2.0:
         high_risk = True

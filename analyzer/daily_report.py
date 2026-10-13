@@ -124,6 +124,14 @@ def _section_us_market() -> str:
     lines.append(f"\n🇺🇸 <b>美股關鍵指標</b>"
                  + (f"（{last_date} 收盤）" if last_date else ""))
 
+    # ★ 2026-10-13：個別 symbol 的資料日期可能落後於區塊標題的日期
+    # （yfinance 對該檔回全 NaN 佔位列，濾掉後退回前一交易日）。
+    # 不標記的話，3 天前的價格會被當成「昨收」看。
+    def _stale(q) -> str:
+        if last_date and q.last_date and q.last_date != last_date:
+            return f" <i>({q.last_date[5:]} 資料)</i>"
+        return ""
+
     # 指數
     for q in indices:
         arrow = "🔴" if q.change_pct >= 0 else "🟢"
@@ -132,7 +140,7 @@ def _section_us_market() -> str:
             arrow = "🟢" if q.change_pct >= 0 else "🔴"
         lines.append(
             f"   {arrow} {q.label}　<b>{q.price:,.2f}</b>　"
-            f"({q.change_pct:+.2f}%)　<i>{q.correlation}</i>"
+            f"({q.change_pct:+.2f}%)　<i>{q.correlation}</i>{_stale(q)}"
         )
 
     # 相關性 hint（費半 vs 台積電 30 日）
@@ -163,7 +171,8 @@ def _section_us_market() -> str:
             lines.append(
                 f"   {arrow} {q.icon} {q.label}　"
                 f"<b>${q.price:,.2f}</b>　"
-                f"({q.change_pct:+.2f}%){star}　<i>{q.correlation}</i>"
+                f"({q.change_pct:+.2f}%){star}　"
+                f"<i>{q.correlation}</i>{_stale(q)}"
             )
 
     return "\n".join(lines)
