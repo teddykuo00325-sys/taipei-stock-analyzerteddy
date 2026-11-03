@@ -66,6 +66,78 @@ _cache: dict = {"t": 0.0, "v": None}
 _CACHE_TTL = 1800  # 30 分鐘
 
 
+def _last_bar_range(symbol: str, want_date):
+    """取 want_date 當日的 (Low, High, Volume)，來源用 yf.download().
+
+    ★ Ticker.history() 與 yf.download() 對「當日尚未定稿」的 bar 行為不同：
+        history()  -> 整列全 NaN（Open/High/Low/Close/Volume 都沒有）
+        download() -> Open/High/Low/Volume 都有，只有 Close 是 NaN
+    要驗證 fast_info 的報價合不合理就需要當日 High/Low，所以這裡改用
+    download() 補那一列的區間。只在 history() 給空白列時才呼叫。
+    """
+    try:
+        import pandas as _pd
+        d = yf.download(symbol, period="5d", progress=False,
+                        auto_adjust=False)
+        if d is None or d.empty:
+            return None
+        if isinstance(d.columns, _pd.MultiIndex):
+            d.columns = d.columns.droplevel(1)
+        d.index = _pd.to_datetime(d.index).tz_localize(None).normalize()
+        # history() 的 index 帶時區（America/New_York），download() 不帶。
+        # 不先剝掉時區，`ts not in d.index` 會永遠成立。
+        ts = _pd.Timestamp(want_date)
+        if ts.tz is not None:
+            ts = ts.tz_localize(None)
+        ts = ts.normalize()
+        if ts not in d.index:
+            return None
+        row = d.loc[ts]
+        lo, hi, vol = row.get("Low"), row.get("High"), row.get("Volume")
+        if _pd.isna(lo) or _pd.isna(hi) or _pd.isna(vol):
+            return None
+        return float(lo), float(hi), float(vol)
+    except Exception:
+        return None
+
+
+def _patch_last_close(tk, h):
+    """最後一列 Close 為 NaN 但當日確實有成交時，用 fast_info 補上.
+
+    背景：美股**個股**的當日 bar，Yahoo 常常比指數晚定稿。TG 在
+    19:30 EST 跑（收盤後 3.5 小時）剛好卡在空窗，於是巨頭天天顯示
+    前一場的價格。
+
+    安全條件（缺一不補，寧可留 NaN 讓外層退回前一交易日）：
+      1. 當日要有成交量 —— 代表這個交易日真的發生過
+      2. fast_info 的報價必須落在當日 High/Low 內 —— 擋掉盤後 / 錯價
+    """
+    try:
+        import pandas as _pd
+        last = h.iloc[-1]
+        if not _pd.isna(last.get("Close")):
+            return h
+
+        lo, hi, vol = last.get("Low"), last.get("High"), last.get("Volume")
+        if _pd.isna(lo) or _pd.isna(hi) or _pd.isna(vol):
+            # history() 給了整列空白 → 改從 download() 取當日區間
+            rng = _last_bar_range(getattr(tk, "ticker", ""), h.index[-1])
+            if rng is None:
+                return h
+            lo, hi, vol = rng
+
+        if float(vol) <= 0:
+            return h
+        lp = float(tk.fast_info["lastPrice"])
+        if not math.isfinite(lp) or not (float(lo) <= lp <= float(hi)):
+            return h
+        h = h.copy()
+        h.iloc[-1, h.columns.get_loc("Close")] = lp
+        return h
+    except Exception:
+        return h
+
+
 def _fetch_one(symbol: str) -> tuple[float, float, float, str] | None:
     """單一 ticker 抓最近 5 日，回最後一筆 close + 漲跌 + 日期.
 
@@ -82,9 +154,19 @@ def _fetch_one(symbol: str) -> tuple[float, float, float, str] | None:
     把 NaN 濾掉，並在算完後再確認一次。
     """
     try:
-        h = yf.Ticker(symbol).history(period="5d")
+        tk = yf.Ticker(symbol)
+        h = tk.history(period="5d")
         if h.empty:
             return None
+
+        # ★ 2026-11-03：美股**個股**的當日 bar，Yahoo 常常
+        # Open/High/Low/Volume 都有了但 Close 還是 NaN（指數不會）。
+        # TG 在 19:30 EST 跑（收盤後 3.5 小時）剛好卡在這個空窗，
+        # 於是 10 檔巨頭天天顯示前一場的價格。
+        # 這種「bar 已成形、只缺 Close」的情況改用 fast_info.lastPrice，
+        # 並驗證它落在當日 High/Low 內才採用（實測 10/10 都通過）。
+        h = _patch_last_close(tk, h)
+
         h = h.dropna(subset=["Close"])
         if len(h) < 2:
             return None

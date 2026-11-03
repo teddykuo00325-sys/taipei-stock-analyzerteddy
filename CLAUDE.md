@@ -407,6 +407,75 @@ low risk。若哪天 `^SOX` 也中這招，**跳空保護會靜默消失且無�
 SPCX 163.42 都回到 10-12）。**症狀是暫時的，修的是韌性** ——
 尤其是丁那個靜默失效的路徑。
 
+### 2026-11-03：**三週體檢 — 績效轉正 + 修 3 個資料問題**
+
+**運作狀態**：GH Actions 近 20 次全 success；交易日 37.7 分（含 09:08 等待）、
+週末 0.6 分正確跳過；8 個 TG 區塊零例外。
+
+**績效首次翻正**（A 的「讓贏家跑」生效，平均持有 4.3 → 7.6 日）：
+
+| 指標 | 09-22 | **11-03** |
+|---|---:|---:|
+| 持股筆數 | 61 | 128 |
+| 毛勝率 | 34.43% | 39.84% |
+| 累積毛 | -13.03% | +26.78% |
+| **累積淨** | **-23.01%** | **+7.62%** |
+| Sharpe | -2.58 | 0.21 |
+| Profit Factor | 0.43 | **1.17** |
+| 資金配置基準 | 77.0 萬 | 107.6 萬 |
+
+⚠️ 樣本僅 128 筆 / 3 個月，且 +80.7%（6672 騰輝）與 +52.2%（2030 彰源）
+兩筆佔比很大，拿掉就翻盤。**不可當成已驗證**。
+
+`scripts/audit_prices.py` 全量稽核結果：**0 個價格點需要修正**（門檻 1%），
+代表 09-17 / 09-22 兩次修正確實止住了污染源。
+
+---
+
+**甲. 非交易日不鎖單**（`daily_report._market_open_today()`）
+
+2026-09-25 是颱風假（所有股票從 09-24 跳到 09-29），但系統照樣鎖了
+session #95，5 檔全部用 09-24 收盤價當進場價 —— 建出一筆從未發生的交易。
+根因：`send_daily_report.py` 只擋週末（`weekday >= 5`），沒有休市日概念。
+實測 59 個 session 中 1 個中招（5/144 持股 = 3%）。
+
+**不自己維護休市日曆** —— 颱風假無法預先排程，日曆一定會過時。
+改成直接問市場：MIS 在休市日回的是「上一個交易日」的資料，
+比對 `live.quote("2330").date` 與今日即可判定。MIS 完全無回應時
+**fail-open 放行**，避免短暫故障讓當天 Track Record 缺一筆。
+
+**乙. 美股個股每天慢一場**（`us_market._patch_last_close()`）
+
+Yahoo 對美股**個股**的當日 bar 比指數晚定稿。TG 在 19:30 EST 跑
+（收盤後 3.5 小時）剛好卡在空窗 → 10 檔巨頭天天顯示前一場價格
+（10-13 加的 `(10-30 資料)` 標記正常運作，只是誠實地揭露了這件事）。
+
+兩個 API 行為不同，這是解法的關鍵：
+```
+Ticker.history()  -> 整列 Close/High/Low 都是 NaN，但 Volume 有值
+yf.download()     -> Open/High/Low/Volume 都有，只有 Close 是 NaN
+```
+所以：`history()` 給空白列時，用 `download()` 取當日 High/Low，
+再用 `fast_info["lastPrice"]` 補 Close，**且必須落在當日 High/Low 內**
+才採用（實測 10/10 通過）。修正後 10/10 巨頭追上指數日期。
+
+⚠️ 踩過的坑：`history()` 的 index 帶時區（America/New_York），
+`download()` 不帶。不先 `tz_localize(None)` 就比對，日期永遠對不上。
+
+**丙. ETF 區塊過濾停更基金**（`_ETF_STALE_DAYS = 10`）
+
+`etf.top_n()` 依 AUM 排序，會把「規模大但持股資料早就停更」的 ETF
+擠進前 5。00985A Nomura 只有 2 個日期快照、最新停在 2026-09-16，
+卻在報告裡顯示 7 週前的比較（00993A / 00994A / 00995A 同類）。
+改成多撈 3 倍候選，再依「最新持股日是否在 10 天內」過濾。
+主力 5 檔（00980A/00981A/00982A/00991A/00992A）都是最新的，不受影響。
+
+**丁. `scripts/audit_prices.py` 入庫**
+
+09-22 寫的稽核腳本放在暫存目錄，三週後要用時已被清掉得重寫。
+正式收進 repo，預設唯讀、`--apply` 才寫入且先自動備份。
+檔頭寫明「先還原 split」這個最容易踩的坑。
+
 ### GH Actions Workflow 可靠性
 - `daily-tg-report.yml`: send step **50 min timeout**（2026-09-17 由 20 放寬，容納等到 09:08 鎖單）+ retry step 20 min（with `/tmp/tg_sent_ok` marker 防雙推）
 - 兩支 workflow 都有 dedup（`_check_gh_runs_today` 用 run_number tiebreaker 避免並行 dispatch 死鎖）
@@ -438,6 +507,9 @@ SPCX 163.42 都回到 10-12）。**症狀是暫時的，修的是韌性** ——
 | 09-22 | 目標價在創新高時退回「當日高點 x1.05」（佔 35%），無結構依據 | 新增 `_measured_move()` 前波幅度投射，機械式分支 14→8 檔 |
 | 09-22 | `live.quotes()` 批次只查 tse_、`live.quote()` 被 MIS 空殼 row 誤導 → 上櫃股全部拿不到即時價，退回過期 cache（4714 用了進場日前 4 天的收盤）| 兩段式 tse_→otc_ 補查、`_has_data()` 判斷、cache fallback 加今日檢查 |
 | 10-13 | yfinance 偶發回「全 NaN 佔位列」→ TG 印出 `$nan`；更嚴重的是 `overnight_gap_risk()` 的 `is not None` 擋不住 NaN，`NaN <= -2.0` 為 False → **跳空保護靜默失效** | `_fetch_one()` dropna + `math.isfinite()`；`overnight_gap_risk()` 缺值/NaN 視為 medium 而非 low |
+| 11-03 | 颱風假（09-25）照樣鎖單，5 檔用前一交易日收盤當進場價 | `_market_open_today()` 用 MIS 報價日期判斷是否開盤 |
+| 11-03 | 美股個股當日 bar 比指數晚定稿 → 10 檔巨頭天天顯示前一場價格 | `_patch_last_close()`：`download()` 取當日 High/Low + `fast_info` 補 Close，需落在區間內 |
+| 11-03 | `etf.top_n()` 依 AUM 排序，停更的 00985A 擠進前 5，顯示 7 週前的比較 | 加 `_ETF_STALE_DAYS = 10` 新鮮度過濾 |
 
 ---
 
@@ -484,6 +556,8 @@ python -c "from analyzer import realbacktest; print(realbacktest.track_record(si
 ## 變更紀錄
 
 - 2026-09-02 建立此檔（Claude 帳號轉換用）
+- 2026-11-03 三週體檢：績效首次轉正（淨 -23.01% → +7.62%，PF 1.17）；
+  修非交易日鎖單、美股個股慢一場、ETF 停更基金；稽核腳本入庫。
 - 2026-10-13 美股 NaN 佔位列防護；修正 `overnight_gap_risk()` 遇 NaN 會
   靜默退回 low risk 的風控漏洞。
 - 2026-09-22 修上櫃股即時報價全壞（tse_/otc_ 前綴）＋ 過期價格防護；歷史稽核發現

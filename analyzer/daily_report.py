@@ -10,8 +10,8 @@ import html
 from datetime import date, datetime, timedelta, timezone
 
 from . import (backtest_filter, dca_alert, disposal, etf, etf_scraper,
-               etf_signal, marketdata, performance, realbacktest, screener,
-               telegram_notify, us_market)
+               etf_signal, live, marketdata, performance, realbacktest,
+               screener, telegram_notify, us_market)
 
 
 def _is_cloud() -> bool:
@@ -765,12 +765,35 @@ def _section_realbacktest() -> str:
     return "\n".join(lines)
 
 
+# ETF 持股資料最多可落後幾天，超過就不顯示（視為已停更）
+_ETF_STALE_DAYS = 10
+
+
 def _section_etf_changes(max_etfs: int = 5) -> str:
     """主動式 ETF 持股變化（最新一日 vs 前一日）."""
     try:
-        metas = etf.top_n(max_etfs, taiwan_only=True)
+        # ★ 2026-11-03：top_n() 依 AUM 排序，會把「規模大但持股資料
+        # 早就停更」的 ETF 擠進前 5。實測 00985A Nomura 只有 2 個日期
+        # 快照、最新停在 2026-09-16，卻出現在報告裡顯示 7 週前的比較
+        # （00993A / 00994A / 00995A 也是同類）。
+        # 主力 5 檔（00980A/00981A/00982A/00991A/00992A）都是最新的，
+        # 所以多撈一些候選再依「持股資料新鮮度」過濾。
+        metas = etf.top_n(max_etfs * 3, taiwan_only=True)
     except Exception as e:
         return f"\n📊 <b>主動式 ETF</b>：抓取失敗 ({html.escape(str(e)[:60])})"
+
+    cutoff = (_now_tpe().date() - timedelta(days=_ETF_STALE_DAYS)).isoformat()
+    fresh = []
+    for m in metas:
+        try:
+            ds = etf.list_holding_dates(m.code)
+        except Exception:
+            continue
+        if ds and max(ds) >= cutoff:
+            fresh.append(m)
+        if len(fresh) >= max_etfs:
+            break
+    metas = fresh
     if not metas:
         return ("\n📊 <b>主動式 ETF</b>：暫無資料"
                 "（yfinance 抓 AUM 失敗 + DB 無快照）")
@@ -924,6 +947,32 @@ def build_daily_report(top_n: int = 4,
 _MAX_LOCK_WAIT_MIN = 45
 
 
+def _market_open_today() -> tuple[bool, str]:
+    """今天台股有沒有開盤？用 MIS 報價的「資料日期」直接問市場.
+
+    ★ 2026-11-03：原本 send_daily_report 只擋週末（weekday >= 5），
+    沒有休市日的概念。2026-09-25（颱風假）照樣鎖了 session #95，
+    5 檔全部用 09-24 的收盤價當進場價 —— 等於建了一筆不存在的交易。
+    （實測 08-05 起 59 個 session 中有 1 個中招，5/144 持股 = 3%。）
+
+    不自己維護休市日曆的理由：颱風假無法預先排程，日曆一定會過時。
+    MIS 在休市日回的是「上一個交易日」的資料，比對日期即可判定。
+
+    回傳 (是否開盤, 判定依據)。MIS 完全無回應時 fail-open（放行），
+    避免 MIS 短暫故障就讓當天的 Track Record 整個缺一筆。
+    """
+    today = _now_tpe().strftime("%Y-%m-%d")
+    for ref in ("2330", "2317", "2454"):
+        try:
+            q = live.quote(ref)
+        except Exception:
+            continue
+        if q and getattr(q, "date", None):
+            return (q.date == today,
+                    f"{ref} 報價日期 {q.date}（今日 {today}）")
+    return True, "MIS 無回應，無法判定休市 → 放行"
+
+
 def _wait_until_market_open() -> str:
     """等到台北 09:08 再鎖單；回傳 log 訊息（不需等待時回空字串）."""
     import time as _time
@@ -962,6 +1011,13 @@ def _auto_lock_today_picks(top_n: int) -> list[str]:
     waited = _wait_until_market_open()
     if waited:
         msgs.append(waited)
+
+    # ★ 非交易日（颱風假 / 國定假日）不鎖單 —— 否則會用前一交易日的
+    # 收盤價建出一筆從未發生的交易。
+    is_open, why = _market_open_today()
+    if not is_open:
+        msgs.append(f"⏭️ 今日非交易日，略過鎖單（{why}）")
+        return msgs
     for side in ("long", "short"):
         picks = _LAST_PICKS.get(side) or []
         if not picks or not _LAST_PICKS.get(f"{side}_proceed"):
